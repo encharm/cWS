@@ -8,6 +8,7 @@ node_js:
   - "12"
   - "13"
   - "14"
+  - "16"
 install: npm install --ignore-scripts
 before_script:
   - npm run build-ts

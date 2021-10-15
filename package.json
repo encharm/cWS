@@ -1,0 +1,58 @@
+ {
+  "name": "@encharm/cws",
+  "version": "4.0.1",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "description": "cWS - fast C++ WebSocket implementation for Node.js",
+  "scripts": {
+    "lint": "tslint -c tslint.json 'lib/**/*.ts'",
+    "test": "nyc mocha './tests/**/*.test.ts' --exit",
+    "clean": "rimraf dist/bindings/*",
+    "install": "node-gyp rebuild > build_log.txt 2>&1 || exit 0",
+    "build-ts": "rimraf dist/*.js && rimraf dist/*.ts && npm run lint && tsc",
+    "build-cpp": "node-gyp rebuild > build_log.txt 2>&1 || exit 0"
+  },
+  "keywords": [
+    "tiny",
+    "websocket",
+    "clusterws",
+    "socket",
+    "cws"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/encharm/cWS"
+  },
+  "devDependencies": {
+    "@types/chai": "^4.2.11",
+    "@types/mocha": "^7.0.2",
+    "@types/node": "^13.11.1",
+    "chai": "^4.2.0",
+    "mocha": "^7.1.1",
+    "nyc": "^15.0.1",
+    "rimraf": "^3.0.2",
+    "ts-node": "^8.8.2",
+    "tslint": "^6.1.1",
+    "tslint-eslint-rules": "^5.4.0",
+    "typescript": "^3.8.3"
+  },
+  "nyc": {
+    "all": true,
+    "temp-directory": "./node_modules/.cache/nyc_output",
+    "include": [
+      "lib/**/*.ts",
+      "tests/**/*.ts"
+    ],
+    "extension": [
+      ".ts"
+    ],
+    "require": [
+      "ts-node/register"
+    ],
+    "reporter": [
+      "json",
+      "html"
+    ]
+  }
+}

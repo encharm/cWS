@@ -1,18 +1,12 @@
 <h1 align="center">encharm/cWS</h1>
-<h6 align="center">Fast WebSocket implementation for Node.js</h6>
+<h6 align="center">Fast WebSocket implementation for Node.js and almost a drop-in replacement for the ws module</h6>
 
-<!-- <p align="center">
-  <a href="https://badge.fury.io/js/%40clusterws%2Fcws"><img src="https://badge.fury.io/js/%40clusterws%2Fcws.svg" alt="npm version" height="22"></a>
-   <a href="https://travis-ci.org/ClusterWS/cWS"><img src="https://travis-ci.org/ClusterWS/cWS.svg?branch=master" alt="travis build" height="22"></a>
-</p> -->
 ## Important Notes
 
-* **Consider using latest version of uWebSockets if you do not need compatibility with ws. This repository is a good candidate for using a multi-process architecture.**
+* **Consider using latest version of uWebSockets if you do not need compatibility with ws or a multi-process architecture.**
 
 * This repository is a fork of [ClusterWS/cWS](https://github.com/ClusterWS/cWS)
 * Prior, this repository was a fork of [uWebSockets v0.14](https://github.com/uNetworking/uWebSockets/tree/v0.14) therefore has two licence [MIT](https://github.com/ClusterWS/uWS/blob/master/LICENSE) and [ZLIB](https://github.com/ClusterWS/uWS/blob/master/src/LICENSE)
-* Consider using latest [uWebSockets](https://github.com/uNetworking/uWebSockets.js) version instead
-* You can support me through [Patreon](https://www.patreon.com/clusterws) and [PayPal](https://www.paypal.me/goriunov)
 
 ## Supported Node Versions (SSL)
 
@@ -43,16 +37,16 @@ This table is true if you run ssl directly with `cws` (`Node.js`). In case if yo
 ### Installation
 
 ```js
-npm i @clusterws/cws
+npm i @encharm/cws
 ```
 
 ### Websocket Client
 
-Typings: [dist/client.d.ts](https://github.com/ClusterWS/cWS/blob/master/dist/client.d.ts)
+Typings: [dist/client.d.ts](https://github.com/encharm/cWS/blob/master/dist/client.d.ts)
 
 Import cws WebSocket:
 ```js
-const { WebSocket } = require('@clusterws/cws');
+const { WebSocket } = require('@encharm/cws');
 ```
 
 Connect to WebSocket server:
@@ -154,15 +148,15 @@ socket._socket;
 // }
 ```
 
-**For more information check typings (`*.d.ts`) files in [dist](https://github.com/ClusterWS/cWS/blob/master/dist) folder**
+**For more information check typings (`*.d.ts`) files in [dist](https://github.com/encharm/cWS/blob/master/dist) folder**
 
 ### Websocket Server
 
-Typings: [dist/server.d.ts](https://github.com/ClusterWS/cWS/blob/master/dist/server.d.ts)
+Typings: [dist/server.d.ts](https://github.com/encharm/cWS/blob/master/dist/server.d.ts)
 
 Import cws WebSocket:
 ```js
-const { WebSocket } = require('@clusterws/cws');
+const { WebSocket } = require('@encharm/cws');
 ```
 
 Create WebSocket server:
@@ -263,7 +257,7 @@ server.on('upgrade', (request, socket, head) => {
 });
 ```
 
-**For more information check typings (`*.d.ts`) files in [dist](https://github.com/ClusterWS/cWS/blob/master/dist) folder**
+**For more information check typings (`*.d.ts`) files in [dist](https://github.com/encharm/cWS/blob/master/dist) folder**
 
 ### Secure WebSocket
 You can use `wss://` with `cws` by providing `https` server to `cws` and setting `secureProtocol` on https options:
@@ -271,7 +265,7 @@ You can use `wss://` with `cws` by providing `https` server to `cws` and setting
 ```js
 const { readFileSync } = require('fs');
 const { createServer }  = require('https');
-const { WebSocket, secureProtocol  } = require('@clusterws/cws');
+const { WebSocket, secureProtocol  } = require('@encharm/cws');
 
 const options = {
   key: readFileSync(/** path to key */),
@@ -289,7 +283,7 @@ server.listen(port, () => {
 })
 ```
 
-**For more detail example check [examples](https://github.com/ClusterWS/cWS/blob/master/examples) folder**
+**For more detail example check [examples](https://github.com/encharm/cWS/blob/master/examples) folder**
 
 ### Handle App Level Ping In Browser (example)
 Handling custom App level `ping`, `pong` from the client side which does not have `onping` and `onpong` listeners available such as browsers.

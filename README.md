@@ -1,17 +1,16 @@
-<h1 align="center">(Deprecated) ClusterWS/cWS</h1>
+<h1 align="center">encharm/cWS</h1>
 <h6 align="center">Fast WebSocket implementation for Node.js</h6>
 
-<p align="center">
+<!-- <p align="center">
   <a href="https://badge.fury.io/js/%40clusterws%2Fcws"><img src="https://badge.fury.io/js/%40clusterws%2Fcws.svg" alt="npm version" height="22"></a>
    <a href="https://travis-ci.org/ClusterWS/cWS"><img src="https://travis-ci.org/ClusterWS/cWS.svg?branch=master" alt="travis build" height="22"></a>
-</p>
-
-
+</p> -->
 ## Important Notes
 
-* **This project has been deprecated consider using latest version of uWebSockets**
+* **Consider using latest version of uWebSockets if you do not need compatibility with ws. This repository is a good candidate for using a multi-process architecture.**
 
-* This repository is a fork of [uWebSockets v0.14](https://github.com/uNetworking/uWebSockets/tree/v0.14) therefore has two licence [MIT](https://github.com/ClusterWS/uWS/blob/master/LICENSE) and [ZLIB](https://github.com/ClusterWS/uWS/blob/master/src/LICENSE)
+* This repository is a fork of [ClusterWS/cWS](https://github.com/ClusterWS/cWS)
+* Prior, this repository was a fork of [uWebSockets v0.14](https://github.com/uNetworking/uWebSockets/tree/v0.14) therefore has two licence [MIT](https://github.com/ClusterWS/uWS/blob/master/LICENSE) and [ZLIB](https://github.com/ClusterWS/uWS/blob/master/src/LICENSE)
 * Consider using latest [uWebSockets](https://github.com/uNetworking/uWebSockets.js) version instead
 * You can support me through [Patreon](https://www.patreon.com/clusterws) and [PayPal](https://www.paypal.me/goriunov)
 
@@ -19,11 +18,12 @@
 
 This table is true if you run ssl directly with `cws` (`Node.js`). In case if you use proxy for example `nginx`, `cws` can be run on bigger coverage.
 
-|  CWS Version | Node 10  | Node 11 | Node 12          |  Node 13  | Node 14 |
-|--------------|----------|---------|------------------|-----------|---------|
-| 3.0.0        | >=10.0   |    X    | >=12.16          | >=13.9    | >=14.5  |
-| 2.0.0        | >=10.0   |    X    | >=12.16          | >=13.9    |   X     |
-| 1.6.0        | >=10.0   | >=11.0  | >=12.0 & <12.16  | >=13.9    |   X     |
+|  CWS Version | Node 10  | Node 11 | Node 12          |  Node 13  | Node 14 | Node 16  |
+|--------------|----------|---------|------------------|-----------|---------|----------|
+| 4.0.0        | >=10.0   |    X    | >=12.16          | >=13.9    | >=14.5  | >= 16.11 |
+| 3.0.0        | >=10.0   |    X    | >=12.16          | >=13.9    | >=14.5  |    X     |
+| 2.0.0        | >=10.0   |    X    | >=12.16          | >=13.9    |   X     |    X     |
+| 1.6.0        | >=10.0   | >=11.0  | >=12.0 & <12.16  | >=13.9    |   X     |    X     |
 
 ## Documentation
 

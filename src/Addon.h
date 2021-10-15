@@ -27,9 +27,18 @@
   #include "headers/14/base_object-inl.h"
 #endif
 
+#if NODE_MAJOR_VERSION==16
+  #include "headers/16/crypto/crypto_tls.h"
+  #include "headers/16/base_object-inl.h"
+#endif
+
 using BaseObject = node::BaseObject;
+#if NODE_MAJOR_VERSION==16
+using TLSWrap = node::crypto::TLSWrap;
+#else
 using TLSWrap = node::TLSWrap;
-class TLSWrapSSLGetter : public node::TLSWrap {
+#endif
+class TLSWrapSSLGetter : public TLSWrap {
 public:
     void setSSL(const v8::FunctionCallbackInfo<v8::Value> &info){
         v8::Isolate* isolate = info.GetIsolate();

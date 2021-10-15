@@ -1,6 +1,6 @@
-{
-  "name": "@clusterws/cws",
-  "version": "3.0.0",
+ {
+  "name": "@encharm/cws",
+  "version": "4.0.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "description": "cWS - fast C++ WebSocket implementation for Node.js",
@@ -22,7 +22,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ClusterWS/cWS"
+    "url": "https://github.com/encharm/cWS"
   },
   "devDependencies": {
     "@types/chai": "^4.2.11",

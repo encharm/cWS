@@ -25,4 +25,4 @@ targets:
 Linux:
 	g++ $(CPP_SHARED) -static-libstdc++ -static-libgcc -I $$NODE/include/node -I $$NODE/src -I $$NODE/deps/uv/include -I $$NODE/deps/v8/include -I $$NODE/deps/openssl/openssl/include -I $$NODE/deps/zlib -I src/headers/$$V -s -o dist/bindings/cws_linux_$$ABI.node
 Darwin:
-	g++ $(CPP_SHARED) $(CPP_OSX) -I $$NODE/include/node -o dist/bindings/cws_darwin_$$ABI.node
+	g++ $(CPP_SHARED) $(CPP_OSX) -I $$NODE/include/node -I src/headers/$$V -o dist/bindings/cws_darwin_$$ABI.node

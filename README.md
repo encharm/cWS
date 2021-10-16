@@ -15,9 +15,7 @@ This table is true if you run ssl directly with `cws` (`Node.js`). In case if yo
 |  CWS Version | Node 10  | Node 11 | Node 12          |  Node 13  | Node 14 | Node 16  |
 |--------------|----------|---------|------------------|-----------|---------|----------|
 | 4.x.x        | >=10.0   |    X    | >=12.16          | >=13.9    | >=14.5  | >= 16.11 |
-|---------------------------------------------------------------------------------------|
-| The versions below are available via @clusterws/cws                                   |
-|---------------------------------------------------------------------------------------|
+| *The versions below are available via @clusterws/cws*                                   |
 | 3.0.0        | >=10.0   |    X    | >=12.16          | >=13.9    | >=14.5  |    X     |
 | 2.0.0        | >=10.0   |    X    | >=12.16          | >=13.9    |   X     |    X     |
 | 1.6.0        | >=10.0   | >=11.0  | >=12.0 & <12.16  | >=13.9    |   X     |    X     |
@@ -137,6 +135,12 @@ if(socket.readyState === socket.OPEN) {}
 
 // check if socket closed can be done by
 if(socket.readyState === socket.CLOSED) {}
+```
+
+To find out number of buffered (and not yet sent) bytes:
+```js
+socket.bufferedAmount;
+// useful for implementing back-pressure
 ```
 
 To get addresses use `_socket` getter:

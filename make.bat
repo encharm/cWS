@@ -1,5 +1,6 @@
 REM Fix this path !!!
 call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat" amd64
+call "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
 
 set v64=v10.20.1
 set v72=v12.18.2

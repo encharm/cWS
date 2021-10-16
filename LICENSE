@@ -1,11 +1,12 @@
-This software is based on uWebSockets 0.14 which has ZLIB license 
+This software is based on ClusterWS/cWS and before on uWebSockets 0.14 which has ZLIB license 
 make sure to check /src/LICENSE.
 
-For the code provided by cWS:
+For the code provided by cWS (ClusterWS) as well as later by Code Charm:
 
 MIT License
 
 Copyright (c) 2018 cWS
+              2021 Code Charm
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

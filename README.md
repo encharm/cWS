@@ -6,7 +6,7 @@
 * **Consider using latest version of uWebSockets if you do not need compatibility with ws or a multi-process architecture.**
 
 * This repository is a fork of [ClusterWS/cWS](https://github.com/ClusterWS/cWS)
-* Prior, this repository was a fork of [uWebSockets v0.14](https://github.com/uNetworking/uWebSockets/tree/v0.14) therefore has two licence [MIT](https://github.com/ClusterWS/uWS/blob/master/LICENSE) and [ZLIB](https://github.com/ClusterWS/uWS/blob/master/src/LICENSE)
+* Prior, this repository was a fork of [uWebSockets v0.14](https://github.com/uNetworking/uWebSockets/tree/v0.14) therefore has two licence [MIT](https://github.com/encharm/cWS/blob/master/LICENSE) and [ZLIB](https://github.com/encharm/cWS/blob/master/src/LICENSE)
 
 ## Supported Node Versions (SSL)
 

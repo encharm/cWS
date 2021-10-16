@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.WebSocket = void 0;
 const server_1 = require("./server");
 const shared_1 = require("./shared");
 const clientGroup = shared_1.native.client.group.create(0, shared_1.DEFAULT_PAYLOAD_LIMIT);
@@ -26,6 +27,9 @@ class WebSocket {
         else {
             shared_1.native.connect(clientGroup, url, this);
         }
+    }
+    get bufferedAmount() {
+        return this.external ? shared_1.native.getBufferedAmount(this.external) : 0;
     }
     get _socket() {
         const address = this.external ? shared_1.native.getAddress(this.external) : new Array(3);

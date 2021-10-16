@@ -33,6 +33,10 @@ export class WebSocket {
     }
   }
 
+  public get bufferedAmount(): number {
+    return this.external ? native.getBufferedAmount(this.external) : 0;
+  }
+
   public get _socket(): SocketAddress {
     const address: any[] = this.external ? native.getAddress(this.external) : new Array(3);
     return {

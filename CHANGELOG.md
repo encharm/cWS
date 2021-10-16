@@ -1,3 +1,9 @@
+## Released 4.1.0
+* Add support for socket.bufferedAmount
+
+## Released 4.0.2
+* Add support for Node 16
+
 ## Released 3.0.0
 
 **Changes**

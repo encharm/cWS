@@ -90,6 +90,62 @@ async function createWSServer(ssl: boolean, server?: Server | HttpsServer): Prom
         });
     });
 
+    it('Should buffer data and report .bufferedAmount', function (done: () => void): void {
+      this.timeout(10000);
+
+      const NUMBER_OF_MESSAGES: number = 10;
+      const testMessage: string = `Hello world from cWS ` + Math.random();
+      const repeatedMessage: string = testMessage.repeat(10000);
+
+
+      let serverSocket: WebSocket;
+
+      createWSServer(isSSL)
+        .then((wsServer: WebSocketServer): void => {
+          wsServer.on('connection', (socket: WebSocket): void => {
+            serverSocket = socket;
+
+            let toServerCounter: number = 0;
+            socket.on('message', (msg: string): void => {
+              expect(msg).to.be.eql(repeatedMessage);
+              toServerCounter += 1;
+
+              if (toServerCounter === NUMBER_OF_MESSAGES) {
+                for (let i: number = 0; i < NUMBER_OF_MESSAGES;++i) {
+                  const str: string = repeatedMessage;
+                  socket.send(str);
+                }
+                expect(socket.bufferedAmount).greaterThan(0);
+              }
+            });
+          });
+
+          const connection: WebSocket = new WebSocket(connectionUrl);
+
+          connection.on('open', (): void => {
+            for (let i: number = 0; i < NUMBER_OF_MESSAGES;++i) {
+              connection.send(testMessage.repeat(10000));
+            }
+            expect(connection.bufferedAmount).greaterThan(0);
+          });
+
+          let toClientCounter: number = 0;
+          connection.on('message', (msg: string): void => {
+            expect(msg).to.be.eql(testMessage.repeat(10000));
+            toClientCounter += 1;
+
+            if (toClientCounter === NUMBER_OF_MESSAGES) {
+              expect(serverSocket.bufferedAmount).equals(0);
+              expect(connection.bufferedAmount).equals(0);
+              wsServer.close((): void => {
+                done();
+              });
+            }
+          });
+        });
+    });
+
+
     it('Should receive and send ping/pong', (done: () => void): void => {
       createWSServer(isSSL)
         .then((wsServer: WebSocketServer): void => {

@@ -206,6 +206,17 @@ inline Local<Value> getDataV8(cWS::WebSocket<isServer> *webSocket,
              : Local<Value>::Cast(Undefined(isolate));
 }
 
+
+template <bool isServer>
+void getBufferedAmount(const FunctionCallbackInfo<Value> &args) {
+  cWS::WebSocket<isServer> *webSocket =
+    unwrapSocket<isServer>(args[0].As<External>());
+
+  args.GetReturnValue().Set(
+    Integer::NewFromUnsigned(args.GetIsolate(), webSocket->getBufferedAmount())
+  );
+}
+
 template <bool isServer>
 void getUserData(const FunctionCallbackInfo<Value> &args) {
   args.GetReturnValue().Set(getDataV8(

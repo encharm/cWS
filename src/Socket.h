@@ -22,14 +22,13 @@ struct TransferData {
     void (*transferCb)(Poll *);
 };
 
-// perfectly 64 bytes (4 + 60)
+// perfectly 64 bytes (4 + 60) (only for EPoll and if packed)
 struct WIN32_EXPORT Socket : Poll {
-protected:
     struct {
         int poll : 4;
         int shuttingDown : 4;
     } state = {0, false};
-
+protected:
     SSL *ssl;
     void *user = nullptr;
     NodeData *nodeData;
@@ -45,15 +44,19 @@ protected:
         };
 
         Message *head = nullptr, *tail = nullptr;
+        size_t totalLength = 0;
+
         void pop()
         {
             Message *nextMessage;
             if ((nextMessage = head->nextMessage)) {
+                totalLength -= head->length;
                 delete [] (char *) head;
                 head = nextMessage;
             } else {
                 delete [] (char *) head;
                 head = tail = nullptr;
+                totalLength = 0;
             }
         }
 
@@ -70,6 +73,7 @@ protected:
                 head = message;
                 tail = message;
             }
+            totalLength += message->length;
         }
     } messageQueue;
 
@@ -248,6 +252,7 @@ protected:
                         break;
                     } else {
                         messagePtr->length -= sent;
+                        socket->messageQueue.totalLength -= sent;
                         messagePtr->data += sent;
                         break;
                     }
@@ -411,6 +416,10 @@ protected:
     }
 
 public:
+    auto getBufferedAmount() {
+        return messageQueue.totalLength;
+    }
+
     Socket(NodeData *nodeData, Loop *loop, uv_os_sock_t fd, SSL *ssl) : Poll(loop, fd), ssl(ssl), nodeData(nodeData) {
         if (ssl) {
             // OpenSSL treats SOCKETs as int

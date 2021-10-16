@@ -18,6 +18,7 @@ void Initialize(Local<Object> exports) {
   #endif
 
   NODE_SET_METHOD(exports, "getSSLContext", getSSLContext);
+  NODE_SET_METHOD(exports, "getBufferedAmount", getBufferedAmount<cWS::SERVER>);
   NODE_SET_METHOD(exports, "setUserData", setUserData<cWS::SERVER>);
   NODE_SET_METHOD(exports, "getUserData", getUserData<cWS::SERVER>);
   NODE_SET_METHOD(exports, "clearUserData", clearUserData<cWS::SERVER>);

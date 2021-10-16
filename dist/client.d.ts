@@ -13,6 +13,7 @@ export declare class WebSocket {
     private external;
     private socketType;
     constructor(url: string, options?: any);
+    get bufferedAmount(): number;
     get _socket(): SocketAddress;
     get readyState(): number;
     set onopen(listener: () => void);

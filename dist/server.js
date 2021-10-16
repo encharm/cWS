@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.WebSocketServer = void 0;
 const HTTP = require("http");
 const shared_1 = require("./shared");
 class WebSocketServer {

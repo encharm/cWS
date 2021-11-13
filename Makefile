@@ -5,6 +5,8 @@ VER_83 := v14.5.0
 VER_93 := v16.11.1
 VER_108 := v18.3.0
 
+ARCH := `(uname -m)`
+
 default:
 	make targets
 	V=14 NODE=targets/node-$(VER_83) ABI=83 make `(uname -s)`
@@ -17,6 +19,6 @@ targets:
 	curl https://nodejs.org/dist/$(VER_93)/node-$(VER_93)-headers.tar.gz | tar xz -C targets
 	curl https://nodejs.org/dist/$(VER_108)/node-$(VER_108)-headers.tar.gz | tar xz -C targets
 Linux:
-	g++ $(CPP_SHARED) -static-libstdc++ -static-libgcc -I $$NODE/include/node -I $$NODE/src -I $$NODE/deps/uv/include -I $$NODE/deps/v8/include -I $$NODE/deps/openssl/openssl/include -I $$NODE/deps/zlib -I src/headers/$$V -s -o dist/bindings/cws_linux_$$ABI.node
+	g++ $(CPP_SHARED) -static-libstdc++ -static-libgcc -I $$NODE/include/node -I $$NODE/src -I $$NODE/deps/uv/include -I $$NODE/deps/v8/include -I $$NODE/deps/openssl/openssl/include -I $$NODE/deps/zlib -I src/headers/$$V -s -o dist/bindings/cws_linux_$(ARCH)_node$(ABI).node
 Darwin:
-	g++ $(CPP_SHARED) $(CPP_OSX) -I $$NODE/include/node -I src/headers/$$V -o dist/bindings/cws_darwin_$$ABI.node
+	g++ $(CPP_SHARED) $(CPP_OSX) -I $$NODE/include/node -I src/headers/$$V -o dist/bindings/cws_darwin_$(ARCH)_node$(ABI).node

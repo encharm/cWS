@@ -32,8 +32,13 @@
   #include "headers/16/base_object-inl.h"
 #endif
 
+#if NODE_MAJOR_VERSION==18
+  #include "headers/18/crypto/crypto_tls.h"
+  #include "headers/18/base_object-inl.h"
+#endif
+
 using BaseObject = node::BaseObject;
-#if NODE_MAJOR_VERSION==16
+#if NODE_MAJOR_VERSION==16 || NODE_MAJOR_VERSION==18
 using TLSWrap = node::crypto::TLSWrap;
 #else
 using TLSWrap = node::TLSWrap;
@@ -125,14 +130,26 @@ class NativeString {
     } else if (value->IsTypedArray()) {
       Local<ArrayBufferView> arrayBufferView =
           Local<ArrayBufferView>::Cast(value);
+#if NODE_MAJOR_VERSION == 18
+      std::shared_ptr<v8::BackingStore> contents = arrayBufferView->Buffer()->GetBackingStore();
+      length = arrayBufferView->ByteLength();
+      data = (char *)contents->Data();
+#else
       ArrayBuffer::Contents contents = arrayBufferView->Buffer()->GetContents();
       length = contents.ByteLength();
       data = (char *)contents.Data();
+#endif
     } else if (value->IsArrayBuffer()) {
       Local<ArrayBuffer> arrayBuffer = Local<ArrayBuffer>::Cast(value);
+#if NODE_MAJOR_VERSION == 18
+      std::shared_ptr<v8::BackingStore> contents = arrayBuffer->GetBackingStore();
+      length = arrayBuffer->ByteLength();
+      data = (char *)contents->Data();
+#else
       ArrayBuffer::Contents contents = arrayBuffer->GetContents();
       length = contents.ByteLength();
       data = (char *)contents.Data();
+#endif
     } else {
       static char empty[] = "";
       data = empty;
@@ -187,7 +204,12 @@ inline Local<Value> wrapMessage(const char *message, size_t length,
                                 cWS::OpCode opCode, Isolate *isolate) {
 
   if (opCode == cWS::OpCode::BINARY) {
-    return (Local<Value>)ArrayBuffer::New(isolate, (char *)message, length);
+    // return (Local<Value>)ArrayBuffer::New(isolate, (char *)message, length);
+    std::unique_ptr<v8::BackingStore> backing = v8::ArrayBuffer::NewBackingStore((char*)message,
+                                       length,
+                                       [](void*, size_t, void*){},
+                                       nullptr);
+    return (Local<Value>)v8::ArrayBuffer::New(isolate, std::move(backing));
   }
 
   #if NODE_MAJOR_VERSION >= 13

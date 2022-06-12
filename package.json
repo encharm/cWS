@@ -1,6 +1,6 @@
  {
   "name": "@encharm/cws",
-  "version": "4.1.0",
+  "version": "5.0.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "description": "cWS - fast C++ WebSocket implementation for Node.js",

@@ -6,6 +6,8 @@ set v83=v14.5.0
 set v93=v16.11.1
 set v108=v18.3.0
 
+for /f %%i in ('node -p process.arch') do set ARCH=%%i
+
 if not exist targets (
   mkdir targets
   curl https://nodejs.org/dist/%v83%/node-%v83%-headers.tar.gz | tar xz -C targets
@@ -16,9 +18,9 @@ if not exist targets (
   curl https://nodejs.org/dist/%v108%/win-x64/node.lib > targets/node-%v108%/node.lib
 )
 
-cl /I targets/node-%v83%/include/node /I targets/node-%v83%/deps/uv/include /I targets/node-%v83%/deps/v8/include /I targets/node-%v83%/deps/openssl/openssl/include /I targets/node-%v83%/deps/zlib /I src/headers/14 /EHsc /Ox /LD /Fedist/bindings/cws_win32_83.node src/*.cpp targets/node-%v83%/node.lib
-cl /I targets/node-%v93%/include/node /I targets/node-%v93%/deps/uv/include /I targets/node-%v93%/deps/v8/include /I targets/node-%v93%/deps/openssl/openssl/include /I targets/node-%v93%/deps/zlib /I src/headers/16 /EHsc /Ox /LD /Fedist/bindings/cws_win32_93.node src/*.cpp targets/node-%v93%/node.lib
-cl /I targets/node-%v108%/include/node /I targets/node-%v108%/deps/uv/include /I targets/node-%v108%/deps/v8/include /I targets/node-%v108%/deps/openssl/openssl/include /I targets/node-%v108%/deps/zlib /I src/headers/18 /EHsc /Ox /LD /Fedist/bindings/cws_win32_108.node src/*.cpp targets/node-%v108%/node.lib
+cl /I targets/node-%v83%/include/node /I targets/node-%v83%/deps/uv/include /I targets/node-%v83%/deps/v8/include /I targets/node-%v83%/deps/openssl/openssl/include /I targets/node-%v83%/deps/zlib /I src/headers/14 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node83.node src/*.cpp targets/node-%v83%/node.lib
+cl /I targets/node-%v93%/include/node /I targets/node-%v93%/deps/uv/include /I targets/node-%v93%/deps/v8/include /I targets/node-%v93%/deps/openssl/openssl/include /I targets/node-%v93%/deps/zlib /I src/headers/16 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node93.node src/*.cpp targets/node-%v93%/node.lib
+cl /I targets/node-%v108%/include/node /I targets/node-%v108%/deps/uv/include /I targets/node-%v108%/deps/v8/include /I targets/node-%v108%/deps/openssl/openssl/include /I targets/node-%v108%/deps/zlib /I src/headers/18 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node108.node src/*.cpp targets/node-%v108%/node.lib
 
 del ".\*.obj"
 del ".\dist\bindings\*.exp"

@@ -12,7 +12,7 @@ exports.SLIDING_DEFLATE_WINDOW = 16;
 exports.DEFAULT_PAYLOAD_LIMIT = 16777216;
 exports.native = (() => {
     try {
-        return require(`../dist/bindings/cws_${process.platform}_${process.versions.modules}`);
+        return require(`../dist/bindings/cws_${process.platform}_${process.arch}_node${process.versions.modules}`);
     }
     catch (err) {
         err.message = err.message + ` check './node_modules/@clusterws/cws/build_log.txt' for post install build logs`;

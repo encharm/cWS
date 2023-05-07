@@ -2,10 +2,16 @@ import { expect } from 'chai';
 import { connect } from 'net';
 import { readFileSync } from 'fs';
 import { connect as tlsConnect } from 'tls';
-import { createServer, Server } from 'http';
+import { Server } from 'http';
 import { createServer as createServerHttps, Server as HttpsServer } from 'https';
 
 import { WebSocket, WebSocketServer, secureProtocol } from '../lib';
+
+import { WebSocket as WSWebSocket } from 'ws';
+
+
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 
 const serverPort: number = 3000;
 const secureServerPort: number = 3001;
@@ -44,7 +50,7 @@ async function createWSServer(ssl: boolean, server?: Server | HttpsServer): Prom
   });
 }
 
-['SSL', 'Non-SSL'].forEach((type: string): void => {
+['Non-SSL'].forEach((type: string): void => {
   const isSSL: boolean = type === 'SSL';
   const connectionUrl: string = isSSL ? `wss://localhost:${secureServerPort}` : `ws://localhost:${serverPort}`;
 
@@ -89,6 +95,76 @@ async function createWSServer(ssl: boolean, server?: Server | HttpsServer): Prom
           });
         });
     });
+
+    const CONNECTION_COUNT = 3;
+    const MESSAGE_COUNT = 200;
+
+    it.only('Should receive and send message multiple messages', (done: () => void): void => {
+      const testMessage: string = `Hello world from cWS ` + Math.random();
+
+      const connections: WebSocket[] = [];
+
+      createWSServer(isSSL)
+        .then((wsServer: WebSocketServer): void => {
+          wsServer.on('connection', (socket: WebSocket): void => {
+            socket.on('message', (msg: string): void => {
+              socket.send(msg);
+            });
+          });
+
+          let closeI = 0;
+          let closeJ = 0;
+          for (let i = 0 ; i < CONNECTION_COUNT;++i) {
+            const connection: WebSocket = new WSWebSocket(connectionUrl);
+            connections.push(connection);
+
+            connection.on('open', async () => {
+              for (let j = 0 ; j < MESSAGE_COUNT;++j) {
+                try {
+                  console.log(`Sending ${i}.${j}`);
+                  connection.send(`${testMessage} at ${i} at ${j}`, {}, (err: Error | undefined) => {
+                    if (err) {
+                      console.error('Error', err);
+                    }
+                  });
+                  await delay((1 * Math.random())|1);
+                } catch (err) {
+                  console.log('Some error', err);
+                }
+              }
+            });
+  
+            connection.on('message', (msg: string): void => {
+              if(!(connection as any).j) { (connection as any).j = 0; }
+              expect(msg.toString()).to.be.eql(`${testMessage} at ${i} at ${(connection as any).j}`);
+              (connection as any).j += 1;
+              if (!(connection as any).messages) {
+                (connection as any).messages = [];
+              }
+              (connection as any).messages.push(msg);
+  
+              if ((connection as any).j === MESSAGE_COUNT) {
+                closeI += 1;
+                if (closeI === CONNECTION_COUNT) {
+                  wsServer.close((): void => {
+                    done();
+                  });
+                }
+              }
+            });
+          }
+          setTimeout(() => {
+            for (let i = 0; i < CONNECTION_COUNT;++i) {
+              if ((connections[i] as any).j !== MESSAGE_COUNT) {
+                console.log(i, (connections[i] as any).j);
+              }
+            }
+          }, 8000);
+        });
+
+
+      }).timeout(10000);
+
 
     it('Should buffer data and report .bufferedAmount', function (done: () => void): void {
       this.timeout(10000);

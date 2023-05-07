@@ -10,15 +10,15 @@ ARCH := `(uname -m | sed 's/86_//')`
 
 default:
 	make targets
-	V=14 NODE=targets/node-$(VER_83) ABI=83 make `(uname -s)`
-	V=16 NODE=targets/node-$(VER_93) ABI=93 make `(uname -s)`
+#	V=14 NODE=targets/node-$(VER_83) ABI=83 make `(uname -s)`
+#	V=16 NODE=targets/node-$(VER_93) ABI=93 make `(uname -s)`
 	V=18 NODE=targets/node-$(VER_108) ABI=108 make `(uname -s)`
 	V=20 NODE=targets/node-$(VER_115) ABI=115 make `(uname -s)`
 	for f in dist/bindings/*.node; do chmod +x $$f; done
 targets: 
 	mkdir -p targets
-	curl https://nodejs.org/dist/$(VER_83)/node-$(VER_83)-headers.tar.gz | tar xz -C targets
-	curl https://nodejs.org/dist/$(VER_93)/node-$(VER_93)-headers.tar.gz | tar xz -C targets
+#	curl https://nodejs.org/dist/$(VER_83)/node-$(VER_83)-headers.tar.gz | tar xz -C targets
+#	curl https://nodejs.org/dist/$(VER_93)/node-$(VER_93)-headers.tar.gz | tar xz -C targets
 	curl https://nodejs.org/dist/$(VER_108)/node-$(VER_108)-headers.tar.gz | tar xz -C targets
 	curl https://nodejs.org/dist/$(VER_115)/node-$(VER_115)-headers.tar.gz | tar xz -C targets
 Linux:

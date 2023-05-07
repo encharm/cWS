@@ -37,8 +37,13 @@
   #include "headers/18/base_object-inl.h"
 #endif
 
+#if NODE_MAJOR_VERSION==20
+  #include "headers/20/crypto/crypto_tls.h"
+  #include "headers/20/base_object-inl.h"
+#endif
+
 using BaseObject = node::BaseObject;
-#if NODE_MAJOR_VERSION==16 || NODE_MAJOR_VERSION==18
+#if NODE_MAJOR_VERSION==16 || NODE_MAJOR_VERSION==18 || NODE_MAJOR_VERSION==20
 using TLSWrap = node::crypto::TLSWrap;
 #else
 using TLSWrap = node::TLSWrap;
@@ -130,7 +135,7 @@ class NativeString {
     } else if (value->IsTypedArray()) {
       Local<ArrayBufferView> arrayBufferView =
           Local<ArrayBufferView>::Cast(value);
-#if NODE_MAJOR_VERSION == 18
+#if NODE_MAJOR_VERSION >= 18
       std::shared_ptr<v8::BackingStore> contents = arrayBufferView->Buffer()->GetBackingStore();
       length = arrayBufferView->ByteLength();
       data = (char *)contents->Data();
@@ -141,7 +146,7 @@ class NativeString {
 #endif
     } else if (value->IsArrayBuffer()) {
       Local<ArrayBuffer> arrayBuffer = Local<ArrayBuffer>::Cast(value);
-#if NODE_MAJOR_VERSION == 18
+#if NODE_MAJOR_VERSION >= 18
       std::shared_ptr<v8::BackingStore> contents = arrayBuffer->GetBackingStore();
       length = arrayBuffer->ByteLength();
       data = (char *)contents->Data();

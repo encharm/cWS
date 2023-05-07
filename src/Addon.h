@@ -136,11 +136,6 @@ class NativeString {
       Local<ArrayBufferView> arrayBufferView =
           Local<ArrayBufferView>::Cast(value);
 #if NODE_MAJOR_VERSION >= 18
-      // std::shared_ptr<v8::BackingStore> contents = arrayBufferView->Buffer()->GetBackingStore();
-      // length = arrayBufferView->ByteLength();
-      // data = (char *)contents->Data();
-       Local<ArrayBufferView> arrayBufferView =
-          Local<ArrayBufferView>::Cast(value);
       length = arrayBufferView->ByteLength();
       data = reinterpret_cast<char*>(arrayBufferView->Buffer()->GetContents().Data());
 #else
@@ -151,10 +146,6 @@ class NativeString {
     } else if (value->IsArrayBuffer()) {
       Local<ArrayBuffer> arrayBuffer = Local<ArrayBuffer>::Cast(value);
 #if NODE_MAJOR_VERSION >= 18
-      // std::shared_ptr<v8::BackingStore> contents = arrayBuffer->GetBackingStore();
-      // length = arrayBuffer->ByteLength();
-      // data = (char *)contents->Data();
-      Local<ArrayBuffer> arrayBuffer = Local<ArrayBuffer>::Cast(value);
       length = arrayBuffer->ByteLength();
       data = reinterpret_cast<char*>(arrayBuffer->GetContents().Data());
 #else

@@ -1,6 +1,7 @@
 REM Fix this path !!!
 call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat" amd64
 call "C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" x64
 
 set v83=v14.5.0
 set v93=v16.11.1
@@ -24,7 +25,7 @@ if not exist targets (
 cl /I targets/node-%v83%/include/node /I targets/node-%v83%/deps/uv/include /I targets/node-%v83%/deps/v8/include /I targets/node-%v83%/deps/openssl/openssl/include /I targets/node-%v83%/deps/zlib /I src/headers/14 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node83.node src/*.cpp targets/node-%v83%/node.lib
 cl /I targets/node-%v93%/include/node /I targets/node-%v93%/deps/uv/include /I targets/node-%v93%/deps/v8/include /I targets/node-%v93%/deps/openssl/openssl/include /I targets/node-%v93%/deps/zlib /I src/headers/16 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node93.node src/*.cpp targets/node-%v93%/node.lib
 cl /std:c++17 /I targets/node-%v108%/include/node /I targets/node-%v108%/deps/uv/include /I targets/node-%v108%/deps/v8/include /I targets/node-%v108%/deps/openssl/openssl/include /I targets/node-%v108%/deps/zlib /I src/headers/18 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node108.node src/*.cpp targets/node-%v108%/node.lib
-cl /std:c++17 /I targets/node-%v115%/include/node /I targets/node-%v115%/deps/uv/include /I targets/node-%v115%/deps/v8/include /I targets/node-%v115%/deps/openssl/openssl/include /I targets/node-%v115%/deps/zlib /I src/headers/18 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node108.node src/*.cpp targets/node-%v115%/node.lib
+cl /std:c++17 /I targets/node-%v115%/include/node /I targets/node-%v115%/deps/uv/include /I targets/node-%v115%/deps/v8/include /I targets/node-%v115%/deps/openssl/openssl/include /I targets/node-%v115%/deps/zlib /I src/headers/20 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node115.node src/*.cpp targets/node-%v115%/node.lib
 
 del ".\*.obj"
 del ".\dist\bindings\*.exp"

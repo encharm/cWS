@@ -137,7 +137,8 @@ class NativeString {
           Local<ArrayBufferView>::Cast(value);
 #if NODE_MAJOR_VERSION >= 18
       length = arrayBufferView->ByteLength();
-      data = reinterpret_cast<char*>(arrayBufferView->Buffer()->GetBackingStore()->Data());
+      auto store = arrayBufferView->Buffer()->GetBackingStore();
+      data = reinterpret_cast<char*>(store->Data());
 #else
       ArrayBuffer::Contents contents = arrayBufferView->Buffer()->GetContents();
       length = contents.ByteLength();
@@ -147,7 +148,8 @@ class NativeString {
       Local<ArrayBuffer> arrayBuffer = Local<ArrayBuffer>::Cast(value);
 #if NODE_MAJOR_VERSION >= 18
       length = arrayBuffer->ByteLength();
-      data = reinterpret_cast<char*>(arrayBuffer->GetBackingStore()->Data());
+      auto store = arrayBuffer->GetBackingStore();
+      data = reinterpret_cast<char*>(store->Data());
 #else
       ArrayBuffer::Contents contents = arrayBuffer->GetContents();
       length = contents.ByteLength();

@@ -6,7 +6,7 @@ call "C:\Program Files (x86)\Microsoft Visual Studio\2017\BuildTools\VC\Auxiliar
 set v83=v14.5.0
 set v93=v16.11.1
 set v108=v18.3.0
-set v115=v20.1.0
+set v115=v20.9.0
 
 for /f %%i in ('node -p process.arch') do set ARCH=%%i
 

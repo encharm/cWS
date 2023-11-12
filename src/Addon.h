@@ -1,3 +1,5 @@
+#define NODE_API_DEFAULT_MODULE_API_VERSION 115
+
 #include <node.h>
 #include <node_buffer.h>
 #include <openssl/bio.h>
@@ -5,6 +7,7 @@
 #include <uv.h>
 #include <cstring>
 
+// TODO: remove below
 #if NODE_MAJOR_VERSION>=10
 #define NODE_WANT_INTERNALS 1
 
@@ -41,6 +44,8 @@
   #include "headers/20/crypto/crypto_tls.h"
   #include "headers/20/base_object-inl.h"
 #endif
+
+#include <tcp_wrap.h>
 
 using BaseObject = node::BaseObject;
 #if NODE_MAJOR_VERSION==16 || NODE_MAJOR_VERSION==18 || NODE_MAJOR_VERSION==20
@@ -290,14 +295,17 @@ void getAddress(const FunctionCallbackInfo<Value> &args) {
 }
 
 uv_handle_t *getTcpHandle(void *handleWrap) {
-  volatile char *memory = (volatile char *)handleWrap;
-  for (volatile uv_handle_t *tcpHandle = (volatile uv_handle_t *)memory;
-       tcpHandle->type != UV_TCP || tcpHandle->data != handleWrap ||
-       tcpHandle->loop != uv_default_loop();
-       tcpHandle = (volatile uv_handle_t *)memory) {
-    memory++;
-  }
-  return (uv_handle_t *)memory;
+  // volatile char *memory = (volatile char *)handleWrap;
+  // for (volatile uv_handle_t *tcpHandle = (volatile uv_handle_t *)memory;
+  //      tcpHandle->type != UV_TCP || tcpHandle->data != handleWrap ||
+  //      tcpHandle->loop != uv_default_loop();
+  //      tcpHandle = (volatile uv_handle_t *)memory) {
+  //   memory++;
+  // }
+  // return (uv_handle_t *)memory;
+
+  // TODO? is the above needed for TLS handles? We don't care about TLS in cWS
+  return static_cast<node::TCPWrap*>(handleWrap)->GetHandle();
 }
 
 struct SendCallbackData {
@@ -377,6 +385,10 @@ void upgrade(const FunctionCallbackInfo<Value> &args) {
   delete ticket;
 }
 
+constexpr uint16_t kDefaultCppGCEmebdderID = 0x90de;
+// https://github.com/nodejs/node/blob/22f383dcd529d6bf790856db614a35fea78e825f/src/env.cc#L506
+
+
 void transfer(const FunctionCallbackInfo<Value> &args) {
   // (_handle.fd OR _handle), SSL
   uv_handle_t *handle = nullptr;
@@ -384,9 +396,11 @@ void transfer(const FunctionCallbackInfo<Value> &args) {
   if (args[0]->IsObject()) {
     Isolate* isolate = args.GetIsolate();
     Local<Context> context = isolate->GetCurrentContext();
+    auto arg_0 = args[0]->ToObject(context).ToLocalChecked();
+    auto field_to_get = arg_0->InternalFieldCount() > 3 ? 1 : 0;
 
     uv_fileno((handle = getTcpHandle(
-                   args[0]->ToObject(context).ToLocalChecked()->GetAlignedPointerFromInternalField(0))),
+                   arg_0->GetAlignedPointerFromInternalField(field_to_get))),
               (uv_os_fd_t *)&ticket->fd);
   } else {
     ticket->fd = args[0].As<Integer>()->Value();

@@ -15,7 +15,7 @@ exports.native = (() => {
         return require(`../dist/bindings/cws_${process.platform}_${process.arch}_node${process.versions.modules}`);
     }
     catch (err) {
-        err.message = err.message + ` check './node_modules/@clusterws/cws/build_log.txt' for post install build logs`;
+        err.message = err.message + ` check './node_modules/@encharm/cws/build_log.txt' for post install build logs`;
         throw err;
     }
 })();

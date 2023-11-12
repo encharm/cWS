@@ -531,9 +531,8 @@ class Utf8Value : public MaybeStackBuffer<char> {
     return std::string_view(out(), length());
   }
 
-  inline bool operator==(const char* a) const {
-    return strcmp(out(), a) == 0;
-  }
+  inline bool operator==(const char* a) const { return strcmp(out(), a) == 0; }
+  inline bool operator!=(const char* a) const { return !(*this == a); }
 };
 
 class TwoByteValue : public MaybeStackBuffer<uint16_t> {
@@ -577,12 +576,6 @@ struct OnScopeLeaveImpl {
   OnScopeLeaveImpl(OnScopeLeaveImpl&& other)
     : fn_(std::move(other.fn_)), active_(other.active_) {
     other.active_ = false;
-  }
-  OnScopeLeaveImpl& operator=(OnScopeLeaveImpl&& other) {
-    if (this == &other) return *this;
-    this->~OnScopeLeave();
-    new (this)OnScopeLeaveImpl(std::move(other));
-    return *this;
   }
 };
 
@@ -686,9 +679,8 @@ struct FunctionDeleter {
 template <typename T, void (*function)(T*)>
 using DeleteFnPtr = typename FunctionDeleter<T, function>::Pointer;
 
-std::vector<std::string> SplitString(const std::string& in,
-                                     char delim,
-                                     bool skipEmpty = true);
+std::vector<std::string_view> SplitString(const std::string_view in,
+                                          const std::string_view delim);
 
 inline v8::MaybeLocal<v8::Value> ToV8Value(v8::Local<v8::Context> context,
                                            std::string_view str,
@@ -880,44 +872,68 @@ v8::Local<v8::FunctionTemplate> NewFunctionTemplate(
 // Convenience methods for NewFunctionTemplate().
 void SetMethod(v8::Local<v8::Context> context,
                v8::Local<v8::Object> that,
-               const char* name,
+               const std::string_view name,
                v8::FunctionCallback callback);
 // Similar to SetProtoMethod but without receiver signature checks.
 void SetMethod(v8::Isolate* isolate,
                v8::Local<v8::Template> that,
-               const char* name,
+               const std::string_view name,
                v8::FunctionCallback callback);
 
-void SetFastMethod(v8::Local<v8::Context> context,
-                   v8::Local<v8::Object> that,
-                   const char* name,
+void SetFastMethod(v8::Isolate* isolate,
+                   v8::Local<v8::Template> that,
+                   const std::string_view name,
                    v8::FunctionCallback slow_callback,
                    const v8::CFunction* c_function);
-void SetFastMethodNoSideEffect(v8::Local<v8::Context> context,
-                               v8::Local<v8::Object> that,
-                               const char* name,
+void SetFastMethod(v8::Local<v8::Context> context,
+                   v8::Local<v8::Object> that,
+                   const std::string_view name,
+                   v8::FunctionCallback slow_callback,
+                   const v8::CFunction* c_function);
+void SetFastMethod(v8::Isolate* isolate,
+                   v8::Local<v8::Template> that,
+                   const std::string_view name,
+                   v8::FunctionCallback slow_callback,
+                   const v8::MemorySpan<const v8::CFunction>& methods);
+void SetFastMethodNoSideEffect(v8::Isolate* isolate,
+                               v8::Local<v8::Template> that,
+                               const std::string_view name,
                                v8::FunctionCallback slow_callback,
                                const v8::CFunction* c_function);
-
+void SetFastMethodNoSideEffect(v8::Local<v8::Context> context,
+                               v8::Local<v8::Object> that,
+                               const std::string_view name,
+                               v8::FunctionCallback slow_callback,
+                               const v8::CFunction* c_function);
+void SetFastMethodNoSideEffect(
+    v8::Isolate* isolate,
+    v8::Local<v8::Template> that,
+    const std::string_view name,
+    v8::FunctionCallback slow_callback,
+    const v8::MemorySpan<const v8::CFunction>& methods);
 void SetProtoMethod(v8::Isolate* isolate,
                     v8::Local<v8::FunctionTemplate> that,
-                    const char* name,
+                    const std::string_view name,
                     v8::FunctionCallback callback);
 
 void SetInstanceMethod(v8::Isolate* isolate,
                        v8::Local<v8::FunctionTemplate> that,
-                       const char* name,
+                       const std::string_view name,
                        v8::FunctionCallback callback);
 
 // Safe variants denote the function has no side effects.
 void SetMethodNoSideEffect(v8::Local<v8::Context> context,
                            v8::Local<v8::Object> that,
-                           const char* name,
+                           const std::string_view name,
                            v8::FunctionCallback callback);
 void SetProtoMethodNoSideEffect(v8::Isolate* isolate,
                                 v8::Local<v8::FunctionTemplate> that,
-                                const char* name,
+                                const std::string_view name,
                                 v8::FunctionCallback callback);
+void SetMethodNoSideEffect(v8::Isolate* isolate,
+                           v8::Local<v8::Template> that,
+                           const std::string_view name,
+                           v8::FunctionCallback callback);
 
 enum class SetConstructorFunctionFlag {
   NONE,
@@ -951,6 +967,19 @@ void SetConstructorFunction(v8::Isolate* isolate,
                             v8::Local<v8::FunctionTemplate> tmpl,
                             SetConstructorFunctionFlag flag =
                                 SetConstructorFunctionFlag::SET_CLASS_NAME);
+
+// Simple RAII class to spin up a v8::Isolate instance.
+class RAIIIsolate {
+ public:
+  explicit RAIIIsolate(const SnapshotData* data = nullptr);
+  ~RAIIIsolate();
+
+  v8::Isolate* get() const { return isolate_; }
+
+ private:
+  std::unique_ptr<v8::ArrayBuffer::Allocator> allocator_;
+  v8::Isolate* isolate_;
+};
 
 }  // namespace node
 

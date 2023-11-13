@@ -1,3 +1,4 @@
+
 CPP_SHARED := -DUSE_LIBUV -std=gnu++17 -Og -g -I ./src -shared -fPIC ./src/Extensions.cpp ./src/Group.cpp ./src/Networking.cpp ./src/Hub.cpp ./src/cSNode.cpp ./src/WebSocket.cpp ./src/HTTPSocket.cpp ./src/Socket.cpp ./src/Epoll.cpp ./src/Addon.cpp -Wno-deprecated-declarations -Wno-unused-result
 CPP_OSX := -stdlib=libc++ -mmacosx-version-min=10.7 -undefined dynamic_lookup
 
@@ -6,7 +7,8 @@ VER_93 := v16.11.1
 VER_108 := v18.3.0
 VER_115 := v20.1.0
 
-ARCH := `(uname -m | sed 's/86_//')`
+#ARCH := `(uname -m | sed 's/86_//')`
+ARCH := `(node -p process.arch)`
 
 default:
 	make targets

@@ -1,10 +1,10 @@
-CPP_SHARED := -DUSE_LIBUV -std=c++17 -Os -flto -I ./src -shared -fPIC ./src/Extensions.cpp ./src/Group.cpp ./src/Networking.cpp ./src/Hub.cpp ./src/cSNode.cpp ./src/WebSocket.cpp ./src/HTTPSocket.cpp ./src/Socket.cpp ./src/Epoll.cpp ./src/Addon.cpp -Wno-deprecated-declarations -Wno-unused-result -fvisibility=hidden
+CPP_SHARED := -DUSE_LIBUV -std=c++17 -g -O3 -I ./src -shared -fPIC ./src/Extensions.cpp ./src/Group.cpp ./src/Networking.cpp ./src/Hub.cpp ./src/cSNode.cpp ./src/WebSocket.cpp ./src/HTTPSocket.cpp ./src/Socket.cpp ./src/Epoll.cpp ./src/Addon.cpp -Wno-deprecated-declarations -Wno-unused-result -fvisibility=hidden
 CPP_OSX := -stdlib=libc++ -mmacosx-version-min=10.7 -undefined dynamic_lookup
 
 VER_83 := v14.5.0
 VER_93 := v16.11.1
 VER_108 := v18.3.0
-VER_115 := v20.1.0
+VER_115 := v20.10.0
 
 ARCH := `(node -p process.arch)`
 

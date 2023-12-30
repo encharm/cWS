@@ -1,16 +1,16 @@
-#ifndef SRC_PERMISSION_WORKER_PERMISSION_H_
-#define SRC_PERMISSION_WORKER_PERMISSION_H_
+#ifndef SRC_PERMISSION_INSPECTOR_PERMISSION_H_
+#define SRC_PERMISSION_INSPECTOR_PERMISSION_H_
 
 #if defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS
 
-#include <vector>
+#include <string>
 #include "permission/permission_base.h"
 
 namespace node {
 
 namespace permission {
 
-class WorkerPermission final : public PermissionBase {
+class InspectorPermission final : public PermissionBase {
  public:
   void Apply(const std::vector<std::string>& allow,
              PermissionScope scope) override;
@@ -26,4 +26,4 @@ class WorkerPermission final : public PermissionBase {
 }  // namespace node
 
 #endif  // defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS
-#endif  // SRC_PERMISSION_WORKER_PERMISSION_H_
+#endif  // SRC_PERMISSION_INSPECTOR_PERMISSION_H_

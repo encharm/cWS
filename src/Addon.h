@@ -331,12 +331,23 @@ void upgrade(const FunctionCallbackInfo<Value> &args) {
   NativeString secKey(isolate, args[2]);
   NativeString extensions(isolate, args[3]);
   NativeString subprotocol(isolate, args[4]);
-
   // todo: move this check into core!
   if (ticket->fd != INVALID_SOCKET) {
+    /*
+      This is required for ui_uring support
+      TODO: investigate further. My theory is that the original FD is set up for IO uring.
+      We need to clone the FD to set the same socket for epoll.
+    */
+    #if defined(__linux) && NODE_MAJOR_VERSION >= 20
+    int oldFd = ticket->fd;
+    ticket->fd = dup(ticket->fd);
+    #endif
     hub.upgrade(ticket->fd, secKey.getData(), ticket->ssl, extensions.getData(),
                 extensions.getLength(), subprotocol.getData(),
                 subprotocol.getLength(), serverGroup);
+    #if defined(__linux) && NODE_MAJOR_VERSION >= 20
+    close(oldFd);
+    #endif
   } else {
     if (ticket->ssl) {
       SSL_free(ticket->ssl);

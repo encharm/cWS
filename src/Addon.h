@@ -31,10 +31,15 @@
   #include "headers/20/base_object-inl.h"
 #endif
 
+#if NODE_MAJOR_VERSION==22
+  #include "headers/22/crypto/crypto_tls.h"
+  #include "headers/22/base_object-inl.h"
+#endif
+
 #include <tcp_wrap.h>
 
 using BaseObject = node::BaseObject;
-#if NODE_MAJOR_VERSION==16 || NODE_MAJOR_VERSION==18 || NODE_MAJOR_VERSION==20
+#if NODE_MAJOR_VERSION >= 16
 using TLSWrap = node::crypto::TLSWrap;
 #else
 using TLSWrap = node::TLSWrap;

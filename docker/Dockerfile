@@ -1,4 +1,4 @@
-FROM buildpack-deps:20.04
+FROM buildpack-deps:22.04
 
 RUN apt update
 ARG DEBIAN_FRONTEND=noninteractive

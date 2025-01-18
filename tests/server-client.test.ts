@@ -99,7 +99,7 @@ async function createWSServer(ssl: boolean, server?: Server | HttpsServer): Prom
     const CONNECTION_COUNT = 3;
     const MESSAGE_COUNT = 200;
 
-    it.only('Should receive and send message multiple messages', (done: () => void): void => {
+    it('Should receive and send message multiple messages', (done: () => void): void => {
       const testMessage: string = `Hello world from cWS ` + Math.random();
 
       const connections: WebSocket[] = [];

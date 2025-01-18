@@ -407,7 +407,6 @@ protected:
                 }
             }
         } else {
-            printf("Enqueue\n");
             Queue::Message *messagePtr = allocMessage(estimatedLength - sizeof(Queue::Message));
             messagePtr->length = T::transform(message, (char *) messagePtr->data, length, transformData);
             messagePtr->callback = callback;

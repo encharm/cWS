@@ -1,4 +1,4 @@
-#define NODE_API_DEFAULT_MODULE_API_VERSION 115
+#define NODE_API_DEFAULT_MODULE_API_VERSION 127
 
 #include <node.h>
 #include <node_buffer.h>
@@ -7,24 +7,7 @@
 #include <uv.h>
 #include <cstring>
 
-// TODO: remove below
-#if NODE_MAJOR_VERSION>=10
 #define NODE_WANT_INTERNALS 1
-
-#if NODE_MAJOR_VERSION==14
-  #include "headers/14/tls_wrap.h"
-  #include "headers/14/base_object-inl.h"
-#endif
-
-#if NODE_MAJOR_VERSION==16
-  #include "headers/16/crypto/crypto_tls.h"
-  #include "headers/16/base_object-inl.h"
-#endif
-
-#if NODE_MAJOR_VERSION==18
-  #include "headers/18/crypto/crypto_tls.h"
-  #include "headers/18/base_object-inl.h"
-#endif
 
 #if NODE_MAJOR_VERSION==20
   #include "headers/20/crypto/crypto_tls.h"
@@ -39,11 +22,8 @@
 #include <tcp_wrap.h>
 
 using BaseObject = node::BaseObject;
-#if NODE_MAJOR_VERSION >= 16
 using TLSWrap = node::crypto::TLSWrap;
-#else
-using TLSWrap = node::TLSWrap;
-#endif
+
 class TLSWrapSSLGetter : public TLSWrap {
 public:
     void setSSL(const v8::FunctionCallbackInfo<v8::Value> &info){
@@ -72,7 +52,7 @@ public:
 #endif
 
  #undef NODE_WANT_INTERNALS
-#endif
+
 
 using namespace std;
 using namespace v8;

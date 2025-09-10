@@ -19,9 +19,9 @@ if not exist targets (
   curl https://nodejs.org/dist/%v137%/win-x64/node.lib > targets/node-%v137%/node.lib
 )
 
-cl /std:c++17 /I targets/node-%v115%/include/node /I targets/node-%v115%/deps/uv/include /I targets/node-%v115%/deps/v8/include /I targets/node-%v115%/deps/openssl/openssl/include /I targets/node-%v115%/deps/zlib /I src/headers/20 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node115.node src/*.cpp targets/node-%v115%/node.lib
-cl /std:c++20 /I targets/node-%v127%/include/node /I targets/node-%v127%/deps/uv/include /I targets/node-%v127%/deps/v8/include /I targets/node-%v127%/deps/openssl/openssl/include /I targets/node-%v127%/deps/zlib /I src/headers/22 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node127.node src/*.cpp targets/node-%v127%/node.lib
-cl /std:c++20 /I targets/node-%v137%/include/node /I targets/node-%v137%/deps/uv/include /I targets/node-%v137%/deps/v8/include /I targets/node-%v137%/deps/openssl/openssl/include /I targets/node-%v137%/deps/zlib /I src/headers/23 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node137.node src/*.cpp targets/node-%v137%/node.lib
+@REM cl /std:c++17 /I targets/node-%v115%/include/node /I targets/node-%v115%/deps/uv/include /I targets/node-%v115%/deps/v8/include /I targets/node-%v115%/deps/openssl/openssl/include /I targets/node-%v115%/deps/zlib /I src/headers/20 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node115.node src/*.cpp targets/node-%v115%/node.lib
+@REM cl /std:c++20 /I targets/node-%v127%/include/node /I targets/node-%v127%/deps/uv/include /I targets/node-%v127%/deps/v8/include /I targets/node-%v127%/deps/openssl/openssl/include /I targets/node-%v127%/deps/zlib /I src/headers/22 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node127.node src/*.cpp targets/node-%v127%/node.lib
+cl /std:c++20 /Zc:__cplusplus /I targets/node-%v137%/include/node /I targets/node-%v137%/deps/uv/include /I targets/node-%v137%/deps/v8/include /I targets/node-%v137%/deps/openssl/openssl/include /I targets/node-%v137%/deps/zlib /I src/headers/24 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node137.node src/*.cpp targets/node-%v137%/node.lib
 
 del ".\*.obj"
 del ".\dist\bindings\*.exp"

@@ -14,7 +14,7 @@ default:
 	V=22 NODE=targets/node-$(VER_127) ABI=127 make `(uname -s)`
 	V=24 NODE=targets/node-$(VER_137) ABI=137 make `(uname -s)`
 	for f in dist/bindings/*.node; do chmod +x $$f; done
-targets: 
+targets:
 	mkdir -p targets
 	curl https://nodejs.org/dist/$(VER_115)/node-$(VER_115)-headers.tar.gz | tar xz -C targets
 	curl https://nodejs.org/dist/$(VER_127)/node-$(VER_127)-headers.tar.gz | tar xz -C targets

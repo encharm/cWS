@@ -19,6 +19,11 @@
   #include "headers/22/base_object-inl.h"
 #endif
 
+#if NODE_MAJOR_VERSION==24
+  #include "headers/24/crypto/crypto_tls.h"
+  #include "headers/24/base_object-inl.h"
+#endif
+
 #include <tcp_wrap.h>
 
 using BaseObject = node::BaseObject;

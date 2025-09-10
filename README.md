@@ -12,11 +12,9 @@
 
 This table is true if you run ssl directly with `cws` (`Node.js`). In case if you use proxy for example `nginx`, `cws` can be run on bigger coverage.
 
-| cWS Version | Node 14  | Node 16 | Node 18 | Node 20 |
-|-------------|----------|---------|-------------------|
-| 4.4.x       |    X     |    X    |   X     |    X    |
-
-Node <14 are supported with @clusterws/cws.
+| cWS Version | Node 24  | Node 22 | Node 20 |
+|-------------|----------|---------|----------
+| 4.5.3       |    X     |    X    |   X     |
 
 ## Documentation
 

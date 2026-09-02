@@ -89,6 +89,10 @@ public:
         return loop;
     }
 
+    NodeData *getNodeData() {
+        return nodeData;
+    }
+
     template <cS::Socket *I(Socket *s), void C(Socket *p, bool error)>
     Socket *connect(const char *hostname, int port, bool secure, NodeData *nodeData) {
         Context *netContext = nodeData->netContext;

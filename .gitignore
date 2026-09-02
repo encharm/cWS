@@ -8,3 +8,4 @@ node_modules/
 
 build_log.txt
 package-lock.json
+dist/bindings/*.dSYM/

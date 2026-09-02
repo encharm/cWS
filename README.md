@@ -12,9 +12,10 @@
 
 This table is true if you run ssl directly with `cws` (`Node.js`). In case if you use proxy for example `nginx`, `cws` can be run on bigger coverage.
 
-| cWS Version | Node 24  | Node 22 | Node 20 |
-|-------------|----------|---------|----------
-| 4.5.3       |    X     |    X    |   X     |
+| cWS Version | Node 26 | Node 24  | Node 22 | Node 20 |
+|-------------|---------|----------|---------|----------
+| 4.6.0       |    X    |    X     |    X    |   X     |
+| 4.5.3       |         |    X     |    X    |   X     |
 
 ## Documentation
 
@@ -261,6 +262,12 @@ server.on('upgrade', (request, socket, head) => {
 ```
 
 **For more information check typings (`*.d.ts`) files in [dist](https://github.com/encharm/cWS/blob/master/dist) folder**
+
+### Write corking (performance)
+
+All `send()` calls made to a socket during one event-loop iteration are framed immediately but written with a single gathered write (`writev`) when the iteration ends, instead of one syscall per `send()`. This is transparent to callers and preserves ordering; `send()` followed by `close()`/`terminate()` in the same tick still delivers the message. While writes are corked they are counted in `bufferedAmount` until the flush.
+
+Set `CWS_CORK=0` in the environment to disable it and write every message immediately (previous behaviour). Corking applies to plain TCP sockets only; TLS sockets always write immediately.
 
 ### Secure WebSocket
 You can use `wss://` with `cws` by providing `https` server to `cws` and setting `secureProtocol` on https options:

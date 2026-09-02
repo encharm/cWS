@@ -5,6 +5,7 @@ CPP_OSX := -std=c++20 -stdlib=libc++ -mmacosx-version-min=10.15 -undefined dynam
 VER_115 := v20.10.0
 VER_127 := v22.12.0
 VER_137 := v24.7.0
+VER_147 := v26.8.1
 
 ARCH := `(node -p process.arch)`
 
@@ -13,12 +14,14 @@ default:
 	V=20 NODE=targets/node-$(VER_115) ABI=115 make `(uname -s)`
 	V=22 NODE=targets/node-$(VER_127) ABI=127 make `(uname -s)`
 	V=24 NODE=targets/node-$(VER_137) ABI=137 make `(uname -s)`
+	V=26 NODE=targets/node-$(VER_147) ABI=147 make `(uname -s)`
 	for f in dist/bindings/*.node; do chmod +x $$f; done
 targets:
 	mkdir -p targets
 	curl https://nodejs.org/dist/$(VER_115)/node-$(VER_115)-headers.tar.gz | tar xz -C targets
 	curl https://nodejs.org/dist/$(VER_127)/node-$(VER_127)-headers.tar.gz | tar xz -C targets
 	curl https://nodejs.org/dist/$(VER_137)/node-$(VER_137)-headers.tar.gz | tar xz -C targets
+	curl https://nodejs.org/dist/$(VER_147)/node-$(VER_147)-headers.tar.gz | tar xz -C targets
 Linux:
 	g++ $(CPP_SHARED) $(CPP_LINUX) -I $$NODE/include/node -I $$NODE/src -I $$NODE/deps/uv/include -I $$NODE/deps/v8/include -I $$NODE/deps/openssl/openssl/include -I $$NODE/deps/zlib -I src/headers/$$V -s -o dist/bindings/cws_linux_$(ARCH)_node$(ABI).node -DHAVE_OPENSSL=1
 Darwin:

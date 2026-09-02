@@ -215,6 +215,17 @@ struct WIN32_EXPORT NodeData {
     std::vector<Poll *> changePollQueue;
     static void asyncCallback(Async *async);
 
+    // Write corking: every send() issued during one event-loop iteration is
+    // queued and flushed with a single gathered write per socket from the
+    // loop's prepare/check hooks (see Socket::flushCorked). One CorkState per
+    // loop, shared by pointer between every NodeData copy (Groups copy the
+    // Hub's NodeData). Disabled with the CWS_CORK=0 environment variable.
+    struct CorkState {
+        bool enabled = false;
+        std::vector<Poll *> pending;
+    };
+    CorkState *corkState = nullptr;
+
     static int getMemoryBlockIndex(size_t length) {
         return (int) ((length >> 4) + bool(length & 15));
     }

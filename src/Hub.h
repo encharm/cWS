@@ -75,6 +75,7 @@ public:
     using cS::Node::run;
     using cS::Node::poll;
     using cS::Node::getLoop;
+    using cS::Node::getNodeData;
     using Group<SERVER>::onConnection;
     using Group<CLIENT>::onConnection;
     using Group<SERVER>::onTransfer;

@@ -1,28 +1,62 @@
-REM Fix this path !!!
-call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat" amd64
-call "C:\Program Files (x86)\Microsoft Visual Studio\2017\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64
-@REM call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" x64
+@echo off
+REM Builds dist\bindings\cws_win32_<arch>_node<ABI>.node for Node 20, 22 and 24.
+REM Needs Visual Studio 2022 (Build Tools or any edition) with the C++ workload, plus node, curl and tar on PATH.
+REM Run from the repository root (a `pushd \\server\share\cWS` mapped drive works too).
 
-set v115=v20.9.0
+set VCVARS=
+for %%p in (
+  "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+  "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+  "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+  "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvars64.bat"
+  "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+) do if not defined VCVARS if exist %%~p set "VCVARS=%%~p"
+if not defined VCVARS (
+  echo Could not find vcvars64.bat for Visual Studio 2022. Edit make.bat.
+  exit /b 1
+)
+call "%VCVARS%" x64 || exit /b 1
+
+REM Keep these in sync with the Makefile (same header tarballs are reused when targets\ already exists).
+set v115=v20.10.0
 set v127=v22.12.0
 set v137=v24.7.0
+set v147=v26.8.1
 
-for /f %%i in ('node -p process.arch') do set ARCH=%%i
+REM vcvars64 targets x64 regardless of the host (e.g. Windows on ARM under Parallels), so name the output by the target, not by node's arch.
+set ARCH=x64
 
-if not exist targets (
-  mkdir targets
-  curl https://nodejs.org/dist/%v115%/node-%v115%-headers.tar.gz | tar xz -C targets
-  curl https://nodejs.org/dist/%v115%/win-x64/node.lib > targets/node-%v115%/node.lib
-  curl https://nodejs.org/dist/%v127%/node-%v127%-headers.tar.gz | tar xz -C targets
-  curl https://nodejs.org/dist/%v127%/win-x64/node.lib > targets/node-%v127%/node.lib
-  curl https://nodejs.org/dist/%v137%/node-%v137%-headers.tar.gz | tar xz -C targets
-  curl https://nodejs.org/dist/%v137%/win-x64/node.lib > targets/node-%v137%/node.lib
+if not exist targets mkdir targets
+for %%v in (%v115% %v127% %v137% %v147%) do (
+  if not exist targets\node-%%v\include (
+    echo Downloading headers for %%v
+    curl -sL https://nodejs.org/dist/%%v/node-%%v-headers.tar.gz | tar xz -C targets || exit /b 1
+  )
+  if not exist targets\node-%%v\node.lib (
+    echo Downloading node.lib for %%v
+    curl -sL https://nodejs.org/dist/%%v/win-x64/node.lib -o targets\node-%%v\node.lib || exit /b 1
+  )
 )
 
-@REM cl /std:c++17 /I targets/node-%v115%/include/node /I targets/node-%v115%/deps/uv/include /I targets/node-%v115%/deps/v8/include /I targets/node-%v115%/deps/openssl/openssl/include /I targets/node-%v115%/deps/zlib /I src/headers/20 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node115.node src/*.cpp targets/node-%v115%/node.lib
-@REM cl /std:c++20 /I targets/node-%v127%/include/node /I targets/node-%v127%/deps/uv/include /I targets/node-%v127%/deps/v8/include /I targets/node-%v127%/deps/openssl/openssl/include /I targets/node-%v127%/deps/zlib /I src/headers/22 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node127.node src/*.cpp targets/node-%v127%/node.lib
-cl /std:c++20 /Zc:__cplusplus /I targets/node-%v137%/include/node /I targets/node-%v137%/deps/uv/include /I targets/node-%v137%/deps/v8/include /I targets/node-%v137%/deps/openssl/openssl/include /I targets/node-%v137%/deps/zlib /I src/headers/24 /EHsc /Ox /LD /Fedist/bindings/cws_win32_%ARCH%_node137.node src/*.cpp targets/node-%v137%/node.lib
+set CLFLAGS=/nologo /std:c++20 /Zc:__cplusplus /EHsc /Ox /LD /DUSE_LIBUV /DHAVE_OPENSSL=1
+set SOURCES=src\Addon.cpp src\Extensions.cpp src\Group.cpp src\Networking.cpp src\Hub.cpp src\cSNode.cpp src\WebSocket.cpp src\HTTPSocket.cpp src\Socket.cpp
 
-del ".\*.obj"
-del ".\dist\bindings\*.exp"
-del ".\dist\bindings\*.lib"
+call :build 20 %v115% 115 || exit /b 1
+call :build 22 %v127% 127 || exit /b 1
+call :build 24 %v137% 137 || exit /b 1
+call :build 26 %v147% 147 || exit /b 1
+
+del /q .\*.obj 2>nul
+del /q .\dist\bindings\*.exp 2>nul
+del /q .\dist\bindings\*.lib 2>nul
+echo Done.
+exit /b 0
+
+:build
+set MAJOR=%~1
+set NODEVER=%~2
+set ABI=%~3
+set T=targets\node-%NODEVER%
+echo === Node %MAJOR% (%NODEVER%, ABI %ABI%)
+cl %CLFLAGS% /I %T%\include\node /I %T%\deps\uv\include /I %T%\deps\v8\include /I %T%\deps\openssl\openssl\include /I %T%\deps\zlib /I src\headers\%MAJOR% /Fedist\bindings\cws_win32_%ARCH%_node%ABI%.node %SOURCES% %T%\node.lib
+exit /b %ERRORLEVEL%

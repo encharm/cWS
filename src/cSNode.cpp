@@ -49,6 +49,7 @@ Node::Node(int recvLength, int prePadding, int postPadding, bool useDefaultLoop)
 
     nodeData->loop = loop;
     nodeData->asyncMutex = &asyncMutex;
+    nodeData->corkState = new NodeData::CorkState;
 
     int indices = NodeData::getMemoryBlockIndex(NodeData::preAllocMaxSize) + 1;
     nodeData->preAlloc = new char*[indices];
@@ -81,6 +82,7 @@ Node::~Node() {
         }
     }
     delete [] nodeData->preAlloc;
+    delete nodeData->corkState;
     delete nodeData->netContext;
     delete nodeData;
     loop->destroy();

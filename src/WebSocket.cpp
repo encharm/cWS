@@ -7,6 +7,7 @@ namespace cWS {
 template <bool isServer>
 WebSocket<isServer>::WebSocket(bool perMessageDeflate, cS::Socket *socket) : cS::Socket(std::move(*socket)) {
     compressionStatus = perMessageDeflate ? CompressionStatus::ENABLED : CompressionStatus::DISABLED;
+    setCorkable(true);
 
     // if we are created in a group with sliding deflate window allocate it here
     if (Group<isServer>::from(this)->extensionOptions & SLIDING_DEFLATE_WINDOW) {
@@ -214,10 +215,10 @@ void WebSocket<isServer>::terminate() {
 
 #ifdef CWS_THREADSAFE
     std::lock_guard<std::recursive_mutex> lockGuard(*nodeData->asyncMutex);
+#endif
     if (isClosed()) {
         return;
     }
-#endif
 
     WebSocket<isServer>::onEnd(this);
 }
@@ -287,6 +288,8 @@ void WebSocket<isServer>::close(int code, const char *message, size_t length) {
 template <bool isServer>
 void WebSocket<isServer>::onEnd(cS::Socket *s) {
     WebSocket<isServer> *webSocket = static_cast<WebSocket<isServer> *>(s);
+
+    webSocket->flushCorkedOnClose();
 
     if (!webSocket->isShuttingDown()) {
         Group<isServer>::from(webSocket)->removeWebSocket(webSocket);

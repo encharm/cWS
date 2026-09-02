@@ -24,6 +24,19 @@
   #include "headers/24/base_object-inl.h"
 #endif
 
+#if NODE_MAJOR_VERSION==26
+  // Build-configuration macros normally supplied by Node's own gyp build;
+  // official binaries are built with both enabled.
+  #ifndef HAVE_SQLITE
+    #define HAVE_SQLITE 1
+  #endif
+  #ifndef HAVE_AMARO
+    #define HAVE_AMARO 1
+  #endif
+  #include "headers/26/crypto/crypto_tls.h"
+  #include "headers/26/base_object-inl.h"
+#endif
+
 #include <tcp_wrap.h>
 
 using BaseObject = node::BaseObject;
@@ -64,8 +77,14 @@ using namespace v8;
 
 cWS::Hub hub(0, true);
 uv_check_t check;
+uv_prepare_t corkPrepare;
 Persistent<Function> noop;
 
+// Corked writes are flushed twice per loop iteration: in the prepare phase
+// (right before the loop blocks in poll, so sends made from timers/nextTick/
+// microtasks go out without waiting for I/O) and in the check phase (after
+// poll and after Node's setImmediate callbacks, so sends made from I/O
+// callbacks go out in the same iteration).
 void registerCheck(Isolate *isolate) {
   uv_check_init((uv_loop_t *)hub.getLoop(), &check);
   check.data = isolate;
@@ -73,9 +92,29 @@ void registerCheck(Isolate *isolate) {
     Isolate *isolate = (Isolate *)check->data;
     HandleScope hs(isolate);
     node::MakeCallback(isolate, isolate->GetCurrentContext()->Global(),
-                       Local<Function>::New(isolate, noop), 0, nullptr);
+                       Local<Function>::New(isolate, noop), 0, nullptr, node::async_context{0, 0});
+    cS::Socket::flushCorked(hub.getNodeData());
   });
   uv_unref((uv_handle_t *)&check);
+
+  uv_prepare_init((uv_loop_t *)hub.getLoop(), &corkPrepare);
+  uv_prepare_start(&corkPrepare, [](uv_prepare_t *) {
+    cS::Socket::flushCorked(hub.getNodeData());
+  });
+  uv_unref((uv_handle_t *)&corkPrepare);
+}
+
+// CWS_CORK=0 (or "false"/"off") disables write corking; anything else enables.
+bool corkEnabledFromEnv() {
+  const char *value = getenv("CWS_CORK");
+  if (!value) {
+    return true;
+  }
+  std::string v(value);
+  for (char &c : v) {
+    c = (char) tolower((unsigned char) c);
+  }
+  return !(v == "0" || v == "false" || v == "off" || v == "no");
 }
 
 class NativeString {
@@ -102,7 +141,9 @@ class NativeString {
 #if NODE_MAJOR_VERSION >= 18
       length = arrayBufferView->ByteLength();
       auto store = arrayBufferView->Buffer()->GetBackingStore();
-      data = reinterpret_cast<char*>(store->Data());
+      // A typed array may be a window into a larger ArrayBuffer (subarray);
+      // honour its offset or we would send bytes from the start of the pool.
+      data = reinterpret_cast<char*>(store->Data()) + arrayBufferView->ByteOffset();
 #else
       ArrayBuffer::Contents contents = arrayBufferView->Buffer()->GetContents();
       length = contents.ByteLength();
@@ -271,7 +312,7 @@ void sendCallback(cWS::WebSocket<isServer> *webSocket, void *data,
     HandleScope hs(sc->isolate);
     node::MakeCallback(sc->isolate, sc->isolate->GetCurrentContext()->Global(),
                        Local<Function>::New(sc->isolate, sc->jsCallback), 0,
-                       nullptr);
+                       nullptr, node::async_context{0, 0});
   }
   sc->jsCallback.Reset();
   delete sc;
@@ -358,11 +399,15 @@ void transfer(const FunctionCallbackInfo<Value> &args) {
     Isolate* isolate = args.GetIsolate();
     Local<Context> context = isolate->GetCurrentContext();
     auto arg_0 = args[0]->ToObject(context).ToLocalChecked();
+#if NODE_MAJOR_VERSION >= 26
+    // V8 14 tags internal-field pointers; Node's own reader knows the tag.
+    // The BaseObject* is the start of the TCPWrap (single inheritance chain).
+    void *handleWrap = node::BaseObject::FromJSObject(arg_0);
+#else
     auto field_to_get = arg_0->InternalFieldCount() > 3 ? 1 : 0;
-
-    uv_fileno((handle = getTcpHandle(
-                   arg_0->GetAlignedPointerFromInternalField(field_to_get))),
-              (uv_os_fd_t *)&ticket->fd);
+    void *handleWrap = arg_0->GetAlignedPointerFromInternalField(field_to_get);
+#endif
+    uv_fileno((handle = getTcpHandle(handleWrap)), (uv_os_fd_t *)&ticket->fd);
   } else {
     ticket->fd = args[0].As<Integer>()->Value();
   }
@@ -400,7 +445,7 @@ void onConnection(const FunctionCallbackInfo<Value> &args) {
         Local<Value> argv[] = {wrapSocket(webSocket, isolate)};
         node::MakeCallback(isolate, isolate->GetCurrentContext()->Global(),
                            Local<Function>::New(isolate, *connectionCallback),
-                           1, argv);
+                           1, argv, node::async_context{0, 0});
       });
 }
 
@@ -424,8 +469,19 @@ void onMessage(const FunctionCallbackInfo<Value> &args) {
       HandleScope hs(isolate);
       Local<Value> argv[] = {wrapMessage(message, length, opCode, isolate),
                             getDataV8(webSocket, isolate)};
-      Local<Function>::New(isolate, *messageCallback)
-          ->Call(isolate->GetCurrentContext(), Null(isolate), 2, argv);
+      node::MakeCallback(isolate, isolate->GetCurrentContext()->Global(),
+                         Local<Function>::New(isolate, *messageCallback), 2, argv, node::async_context{0, 0});
+      // Binary messages are zero-copy views over the shared per-loop receive
+      // buffer, which the next socket read overwrites. Detach the ArrayBuffer
+      // once the handler returns so a retained reference reads as empty and
+      // throws on use, instead of silently exposing another connection's data.
+      // Handlers that need the bytes after returning must copy them (slice()).
+      if (opCode == cWS::OpCode::BINARY) {
+        Local<ArrayBuffer> arrayBuffer = argv[0].template As<ArrayBuffer>();
+        if (arrayBuffer->IsDetachable()) {
+          arrayBuffer->Detach();
+        }
+      }
     }
   });
 }
@@ -446,7 +502,7 @@ void onPing(const FunctionCallbackInfo<Value> &args) {
         wrapMessage(message, length, cWS::OpCode::PING, isolate),
         getDataV8(webSocket, isolate)};
     node::MakeCallback(isolate, isolate->GetCurrentContext()->Global(),
-                       Local<Function>::New(isolate, *pingCallback), 2, argv);
+                       Local<Function>::New(isolate, *pingCallback), 2, argv, node::async_context{0, 0});
   });
 }
 
@@ -466,7 +522,7 @@ void onPong(const FunctionCallbackInfo<Value> &args) {
         wrapMessage(message, length, cWS::OpCode::PONG, isolate),
         getDataV8(webSocket, isolate)};
     node::MakeCallback(isolate, isolate->GetCurrentContext()->Global(),
-                       Local<Function>::New(isolate, *pongCallback), 2, argv);
+                       Local<Function>::New(isolate, *pongCallback), 2, argv, node::async_context{0, 0});
   });
 }
 
@@ -492,7 +548,7 @@ void onDisconnection(const FunctionCallbackInfo<Value> &args) {
         getDataV8(webSocket, isolate)};
     node::MakeCallback(isolate, isolate->GetCurrentContext()->Global(),
                        Local<Function>::New(isolate, *disconnectionCallback), 4,
-                       argv);
+                       argv, node::async_context{0, 0});
   });
 }
 
@@ -510,7 +566,7 @@ void onError(const FunctionCallbackInfo<Value> &args) {
     Local<Value> argv[] = {
         Local<Value>::New(isolate, *(Persistent<Value> *)user)};
     node::MakeCallback(isolate, isolate->GetCurrentContext()->Global(),
-                       Local<Function>::New(isolate, *errorCallback), 1, argv);
+                       Local<Function>::New(isolate, *errorCallback), 1, argv, node::async_context{0, 0});
 
     ((Persistent<Value> *)user)->Reset();
     delete (Persistent<Value> *)user;

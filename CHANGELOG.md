@@ -1,3 +1,12 @@
+## Released 4.6.0
+* Add Node 26 support (ABI 147, V8 14.6): vendored `src/headers/26`, `MakeCallback` with explicit `async_context`, tagged internal-field reads via `BaseObject::FromJSObject`.
+* Cork writes per event-loop iteration: sends to the same socket within one tick go out in a single gathered write. Disable with `CWS_CORK=0`.
+* Binary messages are detached after the `message` handler returns. A retained `ArrayBuffer` now throws on use instead of exposing another connection's bytes (the receive buffer is shared). Copy with `slice()` if the data is needed later.
+* Fix use-after-free when a send callback closes the socket while its write queue is draining.
+* `terminate()` on an already closed socket is a no-op.
+* The `message` handler is now dispatched through `MakeCallback` like every other handler: correct AsyncLocalStorage propagation, exceptions reach `uncaughtException`, and microtasks drain after each message instead of after the whole poll phase. No measurable throughput cost.
+* Fix `send()` of a typed array that is a subarray (non-zero `byteOffset`): the bytes were read from the start of the underlying ArrayBuffer instead of the view's offset.
+
 ## Released 4.1.0
 * Add support for socket.bufferedAmount
 

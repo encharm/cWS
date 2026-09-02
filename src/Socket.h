@@ -2,6 +2,9 @@
 #define SOCKET_CWS_H
 
 #include "Networking.h"
+#ifndef _WIN32
+#include <sys/uio.h>
+#endif
 
 namespace cS {
 
@@ -32,6 +35,12 @@ protected:
     SSL *ssl;
     void *user = nullptr;
     NodeData *nodeData;
+
+    // Corking (see NodeData::CorkState). Only WebSockets opt in; HttpSocket
+    // objects are deleted synchronously in Hub::upgrade so they must never
+    // sit in the pending list. Plain TCP only, SSL keeps the immediate path.
+    bool corkable = false;
+    bool corkPending = false;
 
     // this is not needed by HttpSocket!
     struct Queue {
@@ -91,6 +100,7 @@ protected:
     }
 
     void transfer(NodeData *nodeData, void (*cb)(Poll *)) {
+        flushCorkedOnClose();
         // userData is invalid from now on till onTransfer
         setUserData(new TransferData({getFd(), ssl, getCb(), getPoll(), getUserData(), nodeData, cb}));
         stop(this->nodeData->loop);
@@ -160,10 +170,17 @@ protected:
                 Queue::Message *messagePtr = socket->messageQueue.front();
                 int sent = SSL_write(socket->ssl, messagePtr->data, (int) messagePtr->length);
                 if (sent == (ssize_t) messagePtr->length) {
-                    if (messagePtr->callback) {
-                        messagePtr->callback(p, messagePtr->callbackData, false, messagePtr->reserved);
-                    }
+                    // Pop before the callback: it may close/terminate this socket,
+                    // which frees the queue (use-after-free otherwise).
+                    auto callback = messagePtr->callback;
+                    void *callbackData = messagePtr->callbackData, *reserved = messagePtr->reserved;
                     socket->messageQueue.pop();
+                    if (callback) {
+                        callback(p, callbackData, false, reserved);
+                        if (socket->isClosed()) {
+                            return;
+                        }
+                    }
                     if (socket->messageQueue.empty()) {
                         if ((socket->state.poll & UV_WRITABLE) && SSL_want(socket->ssl) != SSL_WRITING) {
                             socket->change(socket->nodeData->loop, socket, socket->setPoll(UV_READABLE));
@@ -235,10 +252,17 @@ protected:
                     Queue::Message *messagePtr = socket->messageQueue.front();
                     ssize_t sent = ::send(socket->getFd(), messagePtr->data, messagePtr->length, MSG_NOSIGNAL);
                     if (sent == (ssize_t) messagePtr->length) {
-                        if (messagePtr->callback) {
-                            messagePtr->callback(p, messagePtr->callbackData, false, messagePtr->reserved);
-                        }
+                        // Pop before the callback: it may close/terminate this socket,
+                        // which frees the queue (use-after-free otherwise).
+                        auto callback = messagePtr->callback;
+                        void *callbackData = messagePtr->callbackData, *reserved = messagePtr->reserved;
                         socket->messageQueue.pop();
+                        if (callback) {
+                            callback(p, callbackData, false, reserved);
+                            if (socket->isClosed()) {
+                                return;
+                            }
+                        }
                         if (socket->messageQueue.empty()) {
                             // todo, remove bit, don't set directly
                             socket->change(socket->nodeData->loop, socket, socket->setPoll(UV_READABLE));
@@ -357,6 +381,21 @@ protected:
     template <class T, class D>
     void sendTransformed(const char *message, size_t length, void(*callback)(void *socket, void *data, bool cancelled, void *reserved), void *callbackData, D transformData) {
         size_t estimatedLength = T::estimate(message, length) + sizeof(Queue::Message);
+
+        if (corkActive()) {
+            // Frame now, write later: everything sent to this socket during the
+            // current loop iteration goes out in one gathered write (uncork()).
+            Queue::Message *messagePtr = allocMessage(estimatedLength - sizeof(Queue::Message));
+            messagePtr->length = T::transform(message, (char *) messagePtr->data, length, transformData);
+            messagePtr->callback = callback;
+            messagePtr->callbackData = callbackData;
+            enqueue(messagePtr);
+            if (!corkPending) {
+                corkPending = true;
+                nodeData->corkState->pending.push_back(this);
+            }
+            return;
+        }
 
         if (hasEmptyQueue()) {
             if (estimatedLength <= cS::NodeData::preAllocMaxSize) {
@@ -477,8 +516,164 @@ public:
         }
     }
 
+    // ---- Write corking ------------------------------------------------------
+
+    bool corkActive() {
+        return corkable && !ssl && nodeData->corkState && nodeData->corkState->enabled;
+    }
+
+    void setCorkable(bool enable) {
+        corkable = enable;
+    }
+
+    void unregisterCork() {
+        if (!corkPending) {
+            return;
+        }
+        corkPending = false;
+        std::vector<Poll *> &pending = nodeData->corkState->pending;
+        for (size_t i = 0; i < pending.size(); i++) {
+            if (pending[i] == this) {
+                pending[i] = pending.back();
+                pending.pop_back();
+                break;
+            }
+        }
+    }
+
+    // One gathered write of (up to MAX_IOV) messages from the queue head.
+    // Returns bytes written or -1 with errno/WSAGetLastError set. Never pops.
+    ssize_t writeQueueGathered() {
+        static const int MAX_IOV = 64;
+#ifdef _WIN32
+        WSABUF bufs[MAX_IOV];
+        DWORD n = 0;
+        for (Queue::Message *m = messageQueue.front(); m && n < MAX_IOV; m = m->nextMessage) {
+            bufs[n].buf = (CHAR *) m->data;
+            bufs[n].len = (ULONG) m->length;
+            n++;
+        }
+        DWORD sent = 0;
+        if (WSASend(getFd(), bufs, n, &sent, 0, nullptr, nullptr) == SOCKET_ERROR) {
+            return -1;
+        }
+        return (ssize_t) sent;
+#else
+        iovec iov[MAX_IOV];
+        int n = 0;
+        for (Queue::Message *m = messageQueue.front(); m && n < MAX_IOV; m = m->nextMessage) {
+            iov[n].iov_base = (void *) m->data;
+            iov[n].iov_len = m->length;
+            n++;
+        }
+        msghdr msg = {};
+        msg.msg_iov = iov;
+        msg.msg_iovlen = n;
+        return ::sendmsg(getFd(), &msg, MSG_NOSIGNAL);
+#endif
+    }
+
+    // Consumes `sent` bytes from the queue head. Fully written messages are
+    // popped (their callbacks appended to `callbacks` if given); a partially
+    // written head is advanced in place. Returns true if the write was partial.
+    struct PendingCallback {
+        void (*callback)(void *socket, void *data, bool cancelled, void *reserved);
+        void *callbackData, *reserved;
+    };
+
+    bool consumeSent(ssize_t sent, std::vector<PendingCallback> *callbacks) {
+        while (sent > 0 && !messageQueue.empty()) {
+            Queue::Message *m = messageQueue.front();
+            if ((size_t) sent >= m->length) {
+                sent -= m->length;
+                if (callbacks && m->callback) {
+                    callbacks->push_back({m->callback, m->callbackData, m->reserved});
+                }
+                messageQueue.pop();
+            } else {
+                m->length -= sent;
+                m->data += sent;
+                messageQueue.totalLength -= sent;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Flush this socket's corked queue. Called from the loop's prepare/check
+    // hooks via flushCorked(). Whatever cannot be written now is left to the
+    // regular UV_WRITABLE drain loop, which also surfaces hard errors (onEnd).
+    void uncork() {
+        corkPending = false;
+        if (isClosed() || messageQueue.empty()) {
+            return;
+        }
+
+        std::vector<PendingCallback> callbacks;
+        bool stalled = false;
+        while (!messageQueue.empty() && !stalled) {
+            ssize_t sent = writeQueueGathered();
+            if (sent < 0) {
+                stalled = true; // would block, or hard error: drain loop reports it
+            } else {
+                stalled = consumeSent(sent, &callbacks);
+            }
+        }
+
+        if (!messageQueue.empty()) {
+            if ((getPoll() & UV_WRITABLE) == 0) {
+                setPoll(getPoll() | UV_WRITABLE);
+                changePoll(this);
+            }
+        } else if (getPoll() & UV_WRITABLE) {
+            change(nodeData->loop, this, setPoll(UV_READABLE));
+        }
+
+        for (PendingCallback &c : callbacks) {
+            c.callback(this, c.callbackData, false, c.reserved);
+            if (isClosed()) {
+                break; // callback closed us; nothing further may touch the fd
+            }
+        }
+    }
+
+    // Best effort on close/terminate/transfer: push what was corked during this
+    // iteration to the kernel so send() immediately followed by terminate()
+    // still delivers. Callbacks are not invoked; the caller drains the queue.
+    void flushCorkedOnClose() {
+        if (!corkPending) {
+            return;
+        }
+        unregisterCork();
+        if (isClosed()) {
+            return;
+        }
+        while (!messageQueue.empty()) {
+            ssize_t sent = writeQueueGathered();
+            if (sent <= 0 || consumeSent(sent, nullptr)) {
+                break;
+            }
+        }
+    }
+
+    // Loop hook: flush every socket that corked writes since the last hook.
+    static void flushCorked(NodeData *nodeData) {
+        if (!nodeData->corkState || nodeData->corkState->pending.empty()) {
+            return;
+        }
+        // Swap out the list: callbacks run during uncork() may cork new writes
+        // (picked up by the next hook) or close other sockets (their deletion
+        // is deferred to libuv's close phase, so pointers stay valid here).
+        std::vector<Poll *> batch;
+        batch.swap(nodeData->corkState->pending);
+        for (Poll *p : batch) {
+            ((Socket *) p)->uncork();
+        }
+    }
+
     template <class T>
     void closeSocket() {
+        unregisterCork();
         uv_os_sock_t fd = getFd();
         Context *netContext = nodeData->netContext;
         stop(nodeData->loop);

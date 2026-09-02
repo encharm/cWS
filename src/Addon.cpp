@@ -3,7 +3,7 @@
 #include "Addon.h"
 
 void Initialize(Local<Object> exports) {
-  Isolate *isolate = exports->GetIsolate();
+  Isolate *isolate = Isolate::GetCurrent();
   exports->Set(isolate->GetCurrentContext(), String::NewFromUtf8(isolate, "server").ToLocalChecked(),
               Namespace<cWS::SERVER>(isolate).object);
   exports->Set(isolate->GetCurrentContext(), String::NewFromUtf8(isolate, "client").ToLocalChecked(),
@@ -20,6 +20,7 @@ void Initialize(Local<Object> exports) {
   NODE_SET_METHOD(exports, "upgrade", upgrade);
   NODE_SET_METHOD(exports, "connect", connect);
   NODE_SET_METHOD(exports, "setNoop", setNoop);
+  hub.getNodeData()->corkState->enabled = corkEnabledFromEnv();
   registerCheck(isolate);
 }
 

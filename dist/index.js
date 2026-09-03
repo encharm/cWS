@@ -6,3 +6,5 @@ Object.defineProperty(exports, "WebSocket", { enumerable: true, get: function ()
 var server_1 = require("./server");
 Object.defineProperty(exports, "WebSocketServer", { enumerable: true, get: function () { return server_1.WebSocketServer; } });
 exports.secureProtocol = 'TLSv1_2_method';
+var shared_1 = require("./shared");
+Object.defineProperty(exports, "zlibBackend", { enumerable: true, get: function () { return shared_1.zlibBackend; } });

@@ -20,6 +20,8 @@ void Initialize(Local<Object> exports) {
   NODE_SET_METHOD(exports, "upgrade", upgrade);
   NODE_SET_METHOD(exports, "connect", connect);
   NODE_SET_METHOD(exports, "setNoop", setNoop);
+  exports->Set(isolate->GetCurrentContext(), String::NewFromUtf8(isolate, "zlibBackend").ToLocalChecked(),
+               String::NewFromUtf8(isolate, cWS::zlib::backend()).ToLocalChecked()).Check();
   hub.getNodeData()->corkState->enabled = corkEnabledFromEnv();
   registerCheck(isolate);
 }

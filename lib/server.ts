@@ -26,6 +26,7 @@ export class WebSocketServer {
     let nativeOptions: number = 0;
     let windowBits: number = 15;
     let memLevel: number = 8;
+    let level: number = 2;
     if (this.options.perMessageDeflate) {
       // tslint:disable-next-line
       nativeOptions |= PERMESSAGE_DEFLATE;
@@ -40,10 +41,13 @@ export class WebSocketServer {
       if (typeof deflate.memLevel === 'number') {
         memLevel = deflate.memLevel;
       }
+      if (typeof deflate.level === 'number') {
+        level = deflate.level;
+      }
       this.compressThreshold = typeof deflate.threshold === 'number' ? deflate.threshold : 0;
     }
 
-    this.serverGroup = native.server.group.create(nativeOptions, this.options.maxPayload || DEFAULT_PAYLOAD_LIMIT, windowBits, memLevel);
+    this.serverGroup = native.server.group.create(nativeOptions, this.options.maxPayload || DEFAULT_PAYLOAD_LIMIT, windowBits, memLevel, level);
     setupNative(this.serverGroup, 'server', this);
 
     if (this.options.noServer) {

@@ -4,7 +4,7 @@
 #include "Group.h"
 #include "cSNode.h"
 #include <string>
-#include <zlib.h>
+#include "Zlib.h"
 #include <mutex>
 #include <map>
 
@@ -18,10 +18,10 @@ protected:
         Group<CLIENT> *group;
     };
 
-    static z_stream *allocateDefaultCompressor(z_stream *zStream, int windowBits = 15, int memLevel = 8);
+    static zlib::Stream *allocateDefaultCompressor(int level = 1, int windowBits = 15, int memLevel = 8);
 
-    z_stream inflationStream = {}, deflationStream = {};
-    char *deflate(char *data, size_t &length, z_stream *slidingDeflateWindow);
+    zlib::Stream *inflationStream = nullptr, *deflationStream = nullptr;
+    char *deflate(char *data, size_t &length, zlib::Stream *slidingDeflateWindow);
     char *inflate(char *data, size_t &length, size_t maxPayload);
     char *zlibBuffer;
     std::string dynamicZlibBuffer;
@@ -32,8 +32,8 @@ protected:
 
 public:
     template <bool isServer>
-    Group<isServer> *createGroup(int extensionOptions = 0, unsigned int maxPayload = 16777216, int deflateWindowBits = 15, int deflateMemLevel = 8) {
-        return new Group<isServer>(extensionOptions, maxPayload, this, nodeData, deflateWindowBits, deflateMemLevel);
+    Group<isServer> *createGroup(int extensionOptions = 0, unsigned int maxPayload = 16777216, int deflateWindowBits = 15, int deflateMemLevel = 8, int deflateLevel = 1) {
+        return new Group<isServer>(extensionOptions, maxPayload, this, nodeData, deflateWindowBits, deflateMemLevel, deflateLevel);
     }
 
     template <bool isServer>
@@ -48,10 +48,11 @@ public:
 
     Hub(int extensionOptions = 0, bool useDefaultLoop = false, unsigned int maxPayload = 16777216) : cS::Node(LARGE_BUFFER_SIZE, WebSocketProtocol<SERVER, WebSocket<SERVER>>::CONSUME_PRE_PADDING, WebSocketProtocol<SERVER, WebSocket<SERVER>>::CONSUME_POST_PADDING, useDefaultLoop),
                                              Group<SERVER>(extensionOptions, maxPayload, this, nodeData), Group<CLIENT>(0, maxPayload, this, nodeData) {
-        inflateInit2(&inflationStream, -15);
+        inflationStream = zlib::createInflate(15);
         zlibBuffer = new char[LARGE_BUFFER_SIZE];
 
-        allocateDefaultCompressor(&deflationStream);
+        // shared compressor for groups without a per-socket sliding window
+        deflationStream = allocateDefaultCompressor();
 
 #ifdef CWS_THREADSAFE
         getLoop()->preCbData = nodeData;
@@ -67,8 +68,8 @@ public:
     }
 
     ~Hub() {
-        inflateEnd(&inflationStream);
-        deflateEnd(&deflationStream);
+        zlib::destroy(inflationStream);
+        zlib::destroy(deflationStream);
         delete [] zlibBuffer;
     }
 

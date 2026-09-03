@@ -12,7 +12,7 @@ WebSocket<isServer>::WebSocket(bool perMessageDeflate, cS::Socket *socket) : cS:
     // if we are created in a group with sliding deflate window allocate it here
     if (Group<isServer>::from(this)->extensionOptions & SLIDING_DEFLATE_WINDOW) {
         Group<isServer> *group = Group<isServer>::from(this);
-        slidingDeflateWindow = Hub::allocateDefaultCompressor(new z_stream{}, group->deflateWindowBits, group->deflateMemLevel);
+        slidingDeflateWindow = Hub::allocateDefaultCompressor(group->deflateLevel, group->deflateWindowBits, group->deflateMemLevel);
     }
 }
 
@@ -53,7 +53,7 @@ void WebSocket<isServer>::send(const char *message, size_t length, OpCode opCode
 
         static size_t transform(const char *src, char *dst, size_t length, TransformData transformData) {
             if (transformData.compress) {
-                char *deflated = Group<isServer>::from(transformData.s)->hub->deflate((char *) src, length, (z_stream *) transformData.s->slidingDeflateWindow);
+                char *deflated = Group<isServer>::from(transformData.s)->hub->deflate((char *) src, length, (zlib::Stream *) transformData.s->slidingDeflateWindow);
                 return WebSocketProtocol<isServer, WebSocket<isServer>>::formatMessage(dst, deflated, length, transformData.opCode, length, true);
             }
 
@@ -314,8 +314,7 @@ void WebSocket<isServer>::onEnd(cS::Socket *s) {
     // remove any per-websocket zlib memory
     if (webSocket->slidingDeflateWindow) {
         // this relates to Hub::allocateDefaultCompressor
-        deflateEnd((z_stream *) webSocket->slidingDeflateWindow);
-        delete (z_stream *) webSocket->slidingDeflateWindow;
+        zlib::destroy((zlib::Stream *) webSocket->slidingDeflateWindow);
         webSocket->slidingDeflateWindow = nullptr;
     }
 }

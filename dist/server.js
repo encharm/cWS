@@ -14,6 +14,7 @@ class WebSocketServer {
         let nativeOptions = 0;
         let windowBits = 15;
         let memLevel = 8;
+        let level = 2;
         if (this.options.perMessageDeflate) {
             nativeOptions |= shared_1.PERMESSAGE_DEFLATE;
             const deflate = typeof this.options.perMessageDeflate === 'object' ? this.options.perMessageDeflate : {};
@@ -26,9 +27,12 @@ class WebSocketServer {
             if (typeof deflate.memLevel === 'number') {
                 memLevel = deflate.memLevel;
             }
+            if (typeof deflate.level === 'number') {
+                level = deflate.level;
+            }
             this.compressThreshold = typeof deflate.threshold === 'number' ? deflate.threshold : 0;
         }
-        this.serverGroup = shared_1.native.server.group.create(nativeOptions, this.options.maxPayload || shared_1.DEFAULT_PAYLOAD_LIMIT, windowBits, memLevel);
+        this.serverGroup = shared_1.native.server.group.create(nativeOptions, this.options.maxPayload || shared_1.DEFAULT_PAYLOAD_LIMIT, windowBits, memLevel, level);
         shared_1.setupNative(this.serverGroup, 'server', this);
         if (this.options.noServer) {
             return;

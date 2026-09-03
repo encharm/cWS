@@ -24,6 +24,7 @@ export declare type ServerConfigs = {
         serverNoContextTakeover?: boolean;
         windowBits?: number;
         memLevel?: number;
+        level?: number;
         threshold?: number;
     };
     verifyClient?: (info: ConnectionInfo, next: VerifyClientNext) => void;
@@ -31,3 +32,4 @@ export declare type ServerConfigs = {
 export { WebSocket } from './client';
 export { WebSocketServer } from './server';
 export declare const secureProtocol: string;
+export { zlibBackend } from './shared';

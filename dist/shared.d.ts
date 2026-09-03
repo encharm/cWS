@@ -9,4 +9,5 @@ export declare const PERMESSAGE_DEFLATE: number;
 export declare const SLIDING_DEFLATE_WINDOW: number;
 export declare const DEFAULT_PAYLOAD_LIMIT: number;
 export declare const native: any;
+export declare const zlibBackend: string;
 export declare function setupNative(group: any, type: string, wsServer?: WebSocketServer): void;

@@ -21,6 +21,8 @@ export const native: any = ((): NodeRequire => {
   }
 })();
 
+export const zlibBackend: string = native.zlibBackend;
+
 export function setupNative(group: any, type: string, wsServer?: WebSocketServer): void {
   native.setNoop(noop);
 

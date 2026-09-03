@@ -21,3 +21,4 @@ tsconfig.json
 tslint.json
 *.sh
 dist/bindings/*.dSYM/
+deps/

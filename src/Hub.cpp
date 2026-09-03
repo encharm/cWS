@@ -8,87 +8,19 @@ namespace cWS {
 // windowBits 9..15 and memLevel 1..9 select the per-socket memory tier (zlib uses
 // about 4x the window plus a 2^(memLevel+9) byte hash table): 15/8 = ~256 KB,
 // 12/5 = ~32 KB, 10/3 = ~8 KB, 9/2 = ~4 KB. Smaller tiers trade ratio for memory.
-z_stream *Hub::allocateDefaultCompressor(z_stream *zStream, int windowBits, int memLevel) {
-    deflateInit2(zStream, 1, Z_DEFLATED, -windowBits, memLevel, Z_DEFAULT_STRATEGY);
-    return zStream;
+// level 1..9: with zlib-ng level 1 is the very fast "quick" strategy (~8% worse
+// ratio than zlib level 1), level 2 matches zlib level 1's ratio at higher speed.
+zlib::Stream *Hub::allocateDefaultCompressor(int level, int windowBits, int memLevel) {
+    return zlib::createDeflate(level, windowBits, memLevel);
 }
 
-char *Hub::deflate(char *data, size_t &length, z_stream *slidingDeflateWindow) {
-    dynamicZlibBuffer.clear();
-
-    z_stream *compressor = slidingDeflateWindow ? slidingDeflateWindow : &deflationStream;
-
-    compressor->next_in = (Bytef *) data;
-    compressor->avail_in = (unsigned int) length;
-
-    // note: zlib requires more than 6 bytes with Z_SYNC_FLUSH
-    const int DEFLATE_OUTPUT_CHUNK = LARGE_BUFFER_SIZE;
-
-    int err;
-    do {
-        compressor->next_out = (Bytef *) zlibBuffer;
-        compressor->avail_out = DEFLATE_OUTPUT_CHUNK;
-
-        err = ::deflate(compressor, Z_SYNC_FLUSH);
-        if (Z_OK == err && compressor->avail_out == 0) {
-            dynamicZlibBuffer.append(zlibBuffer, DEFLATE_OUTPUT_CHUNK - compressor->avail_out);
-            continue;
-        } else {
-            break;
-        }
-    } while (true);
-
-    // note: should not change avail_out
-    if (!slidingDeflateWindow) {
-        deflateReset(compressor);
-    }
-
-    if (dynamicZlibBuffer.length()) {
-        dynamicZlibBuffer.append(zlibBuffer, DEFLATE_OUTPUT_CHUNK - compressor->avail_out);
-
-        length = dynamicZlibBuffer.length() - 4;
-        return (char *) dynamicZlibBuffer.data();
-    }
-
-    length = DEFLATE_OUTPUT_CHUNK - compressor->avail_out - 4;
-    return zlibBuffer;
+char *Hub::deflate(char *data, size_t &length, zlib::Stream *slidingDeflateWindow) {
+    zlib::Stream *compressor = slidingDeflateWindow ? slidingDeflateWindow : deflationStream;
+    return zlib::deflate(compressor, data, length, zlibBuffer, LARGE_BUFFER_SIZE, dynamicZlibBuffer, !slidingDeflateWindow);
 }
 
-// todo: let's go through this code once more some time!
 char *Hub::inflate(char *data, size_t &length, size_t maxPayload) {
-    dynamicZlibBuffer.clear();
-
-    inflationStream.next_in = (Bytef *) data;
-    inflationStream.avail_in = (unsigned int) length;
-
-    int err;
-    do {
-        inflationStream.next_out = (Bytef *) zlibBuffer;
-        inflationStream.avail_out = LARGE_BUFFER_SIZE;
-        err = ::inflate(&inflationStream, Z_FINISH);
-        if (!inflationStream.avail_in) {
-            break;
-        }
-
-        dynamicZlibBuffer.append(zlibBuffer, LARGE_BUFFER_SIZE - inflationStream.avail_out);
-    } while (err == Z_BUF_ERROR && dynamicZlibBuffer.length() <= maxPayload);
-
-    inflateReset(&inflationStream);
-
-    if ((err != Z_BUF_ERROR && err != Z_OK) || dynamicZlibBuffer.length() > maxPayload) {
-        length = 0;
-        return nullptr;
-    }
-
-    if (dynamicZlibBuffer.length()) {
-        dynamicZlibBuffer.append(zlibBuffer, LARGE_BUFFER_SIZE - inflationStream.avail_out);
-
-        length = dynamicZlibBuffer.length();
-        return (char *) dynamicZlibBuffer.data();
-    }
-
-    length = LARGE_BUFFER_SIZE - inflationStream.avail_out;
-    return zlibBuffer;
+    return zlib::inflate(inflationStream, data, length, maxPayload, zlibBuffer, LARGE_BUFFER_SIZE, dynamicZlibBuffer);
 }
 
 void Hub::onServerAccept(cS::Socket *s) {

@@ -9,3 +9,15 @@ node_modules/
 build_log.txt
 package-lock.json
 dist/bindings/*.dSYM/
+
+# zlib-ng build outputs (sources are vendored)
+deps/zlib-ng/build-*/
+deps/zlib-ng/*.obj
+deps/zlib-ng/*.lib
+deps/zlib-ng/*.pdb
+deps/zlib-ng/*.exp
+deps/zlib-ng/*.dll
+deps/zlib-ng/*.exe
+deps/zlib-ng/zlib-ng.h
+deps/zlib-ng/zconf-ng.h
+deps/zlib-ng/zlib_name_mangling-ng.h

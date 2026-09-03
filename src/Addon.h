@@ -191,8 +191,11 @@ void createGroup(const FunctionCallbackInfo<Value> &args) {
   if (windowBits > 15) windowBits = 15;
   if (memLevel < 1) memLevel = 1;
   if (memLevel > 9) memLevel = 9;
+  int level = args.Length() > 4 && args[4]->IsNumber() ? (int) args[4].As<Integer>()->Value() : 1;
+  if (level < 1) level = 1;
+  if (level > 9) level = 9;
   cWS::Group<isServer> *group = hub.createGroup<isServer>(
-      args[0].As<Integer>()->Value(), args[1].As<Integer>()->Value(), windowBits, memLevel);
+      args[0].As<Integer>()->Value(), args[1].As<Integer>()->Value(), windowBits, memLevel, level);
   group->setUserData(new GroupData);
   args.GetReturnValue().Set(External::New(args.GetIsolate(), group));
 }

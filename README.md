@@ -14,6 +14,7 @@ This table is true if you run ssl directly with `cws` (`Node.js`). In case if yo
 
 | cWS Version | Node 26 | Node 24  | Node 22 | Node 20 |
 |-------------|---------|----------|---------|----------
+| 4.8.0       |    X    |    X     |    X    |   X     |
 | 4.7.0       |    X    |    X     |    X    |   X     |
 | 4.6.0       |    X    |    X     |    X    |   X     |
 | 4.5.3       |         |    X     |    X    |   X     |
@@ -180,6 +181,9 @@ const wsServer = new WebSocket.Server({
    *   sliding window (streaming compression; far better on small messages). windowBits 9..15 and
    *   memLevel 1..9 pick its memory tier: 15/8 = ~256 KB per socket (default), 12/5 = ~32 KB, 10/3 = ~8 KB.
    *   threshold = minimum message size in bytes to compress (default 0); send(..., { compress }) overrides.
+   *   level 1..9 (default 2): deflate level of the per-socket compressor. The prebuilt bindings use zlib-ng
+   *   (see `zlibBackend` export): level 1 is its very fast "quick" strategy (~3-4x less CPU than zlib
+   *   level 1 for ~8% worse ratio), level 2 matches zlib level 1's ratio.
    * verifyClient?: (info: ConnectionInfo, next: VerifyClientNext) => void (use to allow or decline connections)
    **/ 
  }, () => {

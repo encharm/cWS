@@ -1,3 +1,8 @@
+## Released 4.8.0
+* Prebuilt bindings now compress with zlib-ng 2.2.4 (vendored in `deps/zlib-ng`, statically linked, native `zng_` API so it cannot collide with Node's zlib). Measured on a real RPC stream: level 1 costs 2.2-2.5 us/KB vs 5.6-8 us/KB with zlib. The node-gyp fallback build keeps using Node's zlib through the same `src/Zlib.cpp` wrapper.
+* New `perMessageDeflate.level` option (default 2) and a `zlibBackend` export naming the compiled-in implementation.
+* Fix the node-gyp fallback build (`npm install` on a platform without a prebuilt binding): it lacked the vendored Node header include path, `HAVE_OPENSSL`/`NODE_WANT_INTERNALS`, and a macOS 10.15 deployment target, so it has failed silently since the Node 20 headers were introduced.
+
 ## Released 4.7.0
 * permessage-deflate: messages are now compressed by default once negotiated (previously only `send(..., { compress: true })` compressed anything). New options `threshold` (minimum size to compress), `windowBits` and `memLevel` (per-socket memory tier for the sliding window, advertised as `server_max_window_bits` when below 15).
 * Remove a leftover debug `console.log` on module load.

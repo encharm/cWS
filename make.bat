@@ -38,8 +38,15 @@ for %%v in (%v115% %v127% %v137% %v147%) do (
   )
 )
 
-set CLFLAGS=/nologo /std:c++20 /Zc:__cplusplus /EHsc /Ox /LD /DUSE_LIBUV /DHAVE_OPENSSL=1
-set SOURCES=src\Addon.cpp src\Extensions.cpp src\Group.cpp src\Networking.cpp src\Hub.cpp src\cSNode.cpp src\WebSocket.cpp src\HTTPSocket.cpp src\Socket.cpp
+REM zlib-ng (vendored) built once as a static lib with its NMake makefile; -MT matches the addon's CRT.
+if not exist deps\zlib-ng\zlib-ng.lib (
+  pushd deps\zlib-ng
+  nmake -nologo -f win32\Makefile.msc LOC="-MT" zlib-ng.lib || (popd & exit /b 1)
+  popd
+)
+
+set CLFLAGS=/nologo /std:c++20 /Zc:__cplusplus /EHsc /Ox /LD /DUSE_LIBUV /DHAVE_OPENSSL=1 /DCWS_ZLIB_NG /I deps\zlib-ng
+set SOURCES=src\Addon.cpp src\Extensions.cpp src\Group.cpp src\Networking.cpp src\Hub.cpp src\cSNode.cpp src\WebSocket.cpp src\HTTPSocket.cpp src\Socket.cpp src\Zlib.cpp
 
 call :build 20 %v115% 115 || exit /b 1
 call :build 22 %v127% 127 || exit /b 1
@@ -58,5 +65,5 @@ set NODEVER=%~2
 set ABI=%~3
 set T=targets\node-%NODEVER%
 echo === Node %MAJOR% (%NODEVER%, ABI %ABI%)
-cl %CLFLAGS% /I %T%\include\node /I %T%\deps\uv\include /I %T%\deps\v8\include /I %T%\deps\openssl\openssl\include /I %T%\deps\zlib /I src\headers\%MAJOR% /Fedist\bindings\cws_win32_%ARCH%_node%ABI%.node %SOURCES% %T%\node.lib
+cl %CLFLAGS% /I %T%\include\node /I %T%\deps\uv\include /I %T%\deps\v8\include /I %T%\deps\openssl\openssl\include /I %T%\deps\zlib /I src\headers\%MAJOR% /Fedist\bindings\cws_win32_%ARCH%_node%ABI%.node %SOURCES% %T%\node.lib deps\zlib-ng\zlib-ng.lib
 exit /b %ERRORLEVEL%

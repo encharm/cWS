@@ -43,6 +43,7 @@ protected:
     int extensionOptions;
     int deflateWindowBits = 15;
     int deflateMemLevel = 8;
+    int deflateLevel = 1;
     cS::Timer *timer = nullptr, *httpTimer = nullptr;
     const char *userPingMessage;
     size_t userPingMessageLength;
@@ -63,7 +64,7 @@ protected:
     void addHttpSocket(HttpSocket<isServer> *httpSocket);
     void removeHttpSocket(HttpSocket<isServer> *httpSocket);
 
-    Group(int extensionOptions, unsigned int maxPayload, Hub *hub, cS::NodeData *nodeData, int deflateWindowBits = 15, int deflateMemLevel = 8);
+    Group(int extensionOptions, unsigned int maxPayload, Hub *hub, cS::NodeData *nodeData, int deflateWindowBits = 15, int deflateMemLevel = 8, int deflateLevel = 1);
     void stopListening();
 
 public:

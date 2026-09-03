@@ -12,8 +12,14 @@
                 'src/cSNode.cpp',
                 'src/WebSocket.cpp',
                 'src/HTTPSocket.cpp',
-                'src/Socket.cpp'
+                'src/Socket.cpp',
+                'src/Zlib.cpp'
             ],
+            # Node private headers vendored per major (see src/headers/); the Makefile passes the same -I.
+            'include_dirs': [
+                'src/headers/<!(node -p "parseInt(process.versions.node)")'
+            ],
+            'defines': ['HAVE_OPENSSL=1', 'NODE_WANT_INTERNALS=1'],
             'conditions': [
                 ['OS=="linux"', {
                     'cflags_cc': ['-std=c++17', '-DUSE_LIBUV'],
@@ -31,7 +37,7 @@
                 }],
                 ['OS=="mac"', {
                     'xcode_settings': {
-                        'MACOSX_DEPLOYMENT_TARGET': '10.7',
+                        'MACOSX_DEPLOYMENT_TARGET': '10.15',
                         'CLANG_CXX_LANGUAGE_STANDARD': 'c++20',
                         'CLANG_CXX_LIBRARY': 'libc++',
                         'GCC_GENERATE_DEBUGGING_SYMBOLS': 'NO',

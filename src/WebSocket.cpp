@@ -159,8 +159,11 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
     size_t prefixPart = prefixLength + storedBlocks * 5;
     const size_t MAX_HEADER = 14;
 
-    Queue::Message *first = allocMessage(MAX_HEADER + prefixPart);
-    char *dst = (char *) first->data;
+    // Header + prefix: into the tail slab when corked (no allocation, one iovec with the
+    // frames before it), else its own heap message.
+    bool corked = corkActive();
+    Queue::Message *first = corked ? slabWithSpace(MAX_HEADER + prefixPart) : allocMessage(MAX_HEADER + prefixPart);
+    char *dst = (char *) first->data + (corked ? first->length : 0);
     char *p = dst + WebSocketProtocol<isServer, WebSocket<isServer>>::formatMessage(dst, dst, 0, opCode, prefixPart + bodyLength, deflate);
     if (deflate) {
         const char *src = prefix;
@@ -180,7 +183,12 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
         memcpy(p, prefix, prefixLength);
         p += prefixLength;
     }
-    first->length = p - dst;
+    if (corked) {
+        first->length += (size_t) (p - dst);
+        messageQueue.totalLength += (size_t) (p - dst);
+    } else {
+        first->length = (size_t) (p - dst);
+    }
 
     int memoryIndex = nodeData->getMemoryBlockIndex(sizeof(Queue::Message));
     Queue::Message *second = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
@@ -190,15 +198,15 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
     second->poolIndex = memoryIndex;
     second->ownsData = false;
     second->compressPending = false;
+    second->run = false;
     second->opCode = 0;
     second->callback = sharedSent;
     second->callbackData = payload;
     second->reserved = callback ? new SharedCallback{(void(*)(void *, void *, bool, void *)) callback, callbackData} : nullptr;
     payload->references.fetch_add(1, std::memory_order_relaxed);
 
-    if (corkActive()) {
-        enqueue(first);
-        enqueue(second);
+    if (corked) {
+        enqueue(second); // `first` is (part of) the slab already in the queue
         if (!corkPending) {
             corkPending = true;
             nodeData->corkState->pending.push_back(this);
@@ -319,8 +327,14 @@ void WebSocket<isServer>::sendPrepared(typename WebSocket<isServer>::PreparedMes
     messagePtr->data = preparedMessage->buffer;
     messagePtr->length = preparedMessage->length;
     messagePtr->nextMessage = nullptr;
+    messagePtr->callback = nullptr;
+    messagePtr->callbackData = nullptr;
     messagePtr->reserved = nullptr;
     messagePtr->poolIndex = memoryIndex;
+    messagePtr->ownsData = false;      // pool blocks are reused: every flag must be set
+    messagePtr->compressPending = false;
+    messagePtr->run = false;
+    messagePtr->opCode = 0;
 
     bool wasTransferred;
     if (write(messagePtr, wasTransferred)) {

@@ -63,6 +63,10 @@ public:
             // data is a raw, unframed payload still to be deflated and framed (by the send
             // worker, or by materializeCb if a main-thread write path reaches it first).
             bool compressPending = false;
+            // A slab (pool block of NodeData::slabSize with inline data) that later corked sends
+            // may still append frames to while it sits at the queue tail. Never true for a
+            // message with a callback or borrowed data.
+            bool run = false;
             unsigned char opCode = 0;
         };
 
@@ -392,6 +396,39 @@ protected:
         messageQueue.push(message);
     }
 
+    // ---- Slab messages (corked path) ----------------------------------------
+    static size_t slabCapacity() {
+        return cS::NodeData::slabSize - sizeof(Queue::Message);
+    }
+    // Bytes still free after the written frames of a slab (data may have advanced on a partial write).
+    static size_t slabSpaceLeft(Queue::Message *slab) {
+        const char *base = ((const char *) slab) + sizeof(Queue::Message);
+        return (size_t) ((base + slabCapacity()) - (slab->data + slab->length));
+    }
+    // The slab at the queue tail if `bytes` fit, else a fresh one appended to the queue.
+    // Only the main thread touches the tail, and a message in a worker op is never the
+    // tail (submitToWorker unlinks it), so appending never races the worker.
+    Queue::Message *slabWithSpace(size_t bytes) {
+        Queue::Message *tail = messageQueue.tail;
+        if (tail && tail->run && slabSpaceLeft(tail) >= bytes) {
+            return tail;
+        }
+        int memoryIndex = nodeData->getMemoryBlockIndex(cS::NodeData::slabSize);
+        Queue::Message *slab = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
+        slab->data = ((char *) slab) + sizeof(Queue::Message);
+        slab->length = 0;
+        slab->callback = nullptr;
+        slab->callbackData = nullptr;
+        slab->reserved = nullptr;
+        slab->poolIndex = memoryIndex;
+        slab->ownsData = false;
+        slab->compressPending = false;
+        slab->run = true;
+        slab->opCode = 0;
+        enqueue(slab);
+        return slab;
+    }
+
     Queue::Message *allocMessage(size_t length, const char *data = 0) {
         Queue::Message *messagePtr = (Queue::Message *) new char[sizeof(Queue::Message) + length];
         messagePtr->length = length;
@@ -403,6 +440,7 @@ protected:
         messagePtr->poolIndex = -1;
         messagePtr->ownsData = false;
         messagePtr->compressPending = false;
+        messagePtr->run = false;
         messagePtr->opCode = 0;
 
         if (data) {
@@ -475,27 +513,39 @@ protected:
         size_t estimatedLength = T::estimate(message, length) + sizeof(Queue::Message);
 
         if (corkActive()) {
-            // Frame now, write later: everything sent to this socket during the
-            // current loop iteration goes out in one gathered write (uncork()).
-            // Small messages come from the per-loop block pool (pop() returns them).
+            // Frame now, write later: everything sent to this socket during the current
+            // loop iteration goes out in one gathered write (uncork()). Plain frames are
+            // appended to the slab at the queue tail, so a whole tick is usually one
+            // message: no allocation or list node per send, one iovec on the worker, one
+            // pop on completion. Frames with a callback keep their own message (callbacks
+            // are per message); frames larger than a slab go to the heap.
+            size_t frameLength = estimatedLength - sizeof(Queue::Message);
             Queue::Message *messagePtr;
-            if (estimatedLength <= cS::NodeData::preAllocMaxSize) {
-                int memoryIndex = nodeData->getMemoryBlockIndex((int) estimatedLength);
-                messagePtr = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
-                messagePtr->data = ((char *) messagePtr) + sizeof(Queue::Message);
-                messagePtr->poolIndex = memoryIndex;
-                messagePtr->ownsData = false;
-                messagePtr->compressPending = false;
-                messagePtr->opCode = 0;
+            if (!callback && frameLength <= slabCapacity()) {
+                messagePtr = slabWithSpace(frameLength);
+                size_t n = T::transform(message, (char *) messagePtr->data + messagePtr->length, length, transformData);
+                messagePtr->length += n;
+                messageQueue.totalLength += n;
             } else {
-                messagePtr = allocMessage(estimatedLength - sizeof(Queue::Message));
+                if (estimatedLength <= cS::NodeData::preAllocMaxSize) {
+                    int memoryIndex = nodeData->getMemoryBlockIndex((int) estimatedLength);
+                    messagePtr = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
+                    messagePtr->data = ((char *) messagePtr) + sizeof(Queue::Message);
+                    messagePtr->poolIndex = memoryIndex;
+                    messagePtr->ownsData = false;
+                    messagePtr->compressPending = false;
+                    messagePtr->run = false;
+                    messagePtr->opCode = 0;
+                } else {
+                    messagePtr = allocMessage(estimatedLength - sizeof(Queue::Message));
+                }
+                messagePtr->length = T::transform(message, (char *) messagePtr->data, length, transformData);
+                messagePtr->nextMessage = nullptr;
+                messagePtr->callback = callback;
+                messagePtr->callbackData = callbackData;
+                messagePtr->reserved = nullptr;
+                enqueue(messagePtr);
             }
-            messagePtr->length = T::transform(message, (char *) messagePtr->data, length, transformData);
-            messagePtr->nextMessage = nullptr;
-            messagePtr->callback = callback;
-            messagePtr->callbackData = callbackData;
-            messagePtr->reserved = nullptr;
-            enqueue(messagePtr);
             if (!corkPending) {
                 corkPending = true;
                 nodeData->corkState->pending.push_back(this);
@@ -516,6 +566,7 @@ protected:
                 messagePtr->poolIndex = memoryIndex;
                 messagePtr->ownsData = false;
                 messagePtr->compressPending = false;
+                messagePtr->run = false;
                 messagePtr->opCode = 0;
 
                 bool wasTransferred;
@@ -863,6 +914,7 @@ public:
         messagePtr->poolIndex = memoryIndex;
         messagePtr->ownsData = true;
         messagePtr->compressPending = true;
+        messagePtr->run = false;
         messagePtr->opCode = opCode;
         enqueue(messagePtr);
         if (!corkPending) {

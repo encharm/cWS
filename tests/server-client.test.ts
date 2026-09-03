@@ -678,3 +678,88 @@ describe('CWS prepared messages (shared payload fan-out)', (): void => {
     wsServer.on('connection', (ws: WebSocket): void => ws.send(prepared, { prefix: prefix }));
   });
 });
+
+describe('CWS send queue under pressure', (): void => {
+  const port: number = 3006;
+
+  // Connects one `ws` client, runs `act` on the server side once the client is open, and resolves
+  // with everything the client received (in order) once `expected` messages arrived or the socket closed.
+  function collect(act: (ws: WebSocket) => void, expected: number, options: any = {}): Promise<{ messages: Buffer[], closed: boolean, code?: number }> {
+    return new Promise((resolve: (v: any) => void, reject: (e: any) => void): void => {
+      const messages: Buffer[] = [];
+      let closed: boolean = false;
+      let code: number | undefined;
+      const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: false }, (): void => {
+        const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: false });
+        const finish = (): void => wsServer.close((): void => resolve({ messages, closed, code }));
+        client.on('message', (data: Buffer): void => {
+          messages.push(data);
+          if (options.slowReader) { client.pause(); setTimeout((): void => client.resume(), 2); }
+          if (messages.length === expected && !options.waitForClose) { client.close(); finish(); }
+        });
+        client.on('close', (c: number): void => { closed = true; code = c; finish(); });
+        client.on('error', reject);
+      });
+      wsServer.on('connection', (ws: WebSocket): void => act(ws));
+    });
+  }
+
+  it('Should deliver a burst larger than the kernel buffer, in order, to a slow reader', async (): Promise<void> => {
+    const count: number = 3000;
+    const got: any = await collect((ws: WebSocket): void => {
+      for (let i: number = 0; i < count; i++) {
+        const buf: Buffer = Buffer.alloc(4096, i & 0xff);
+        buf.writeUInt32LE(i, 0);
+        ws.send(buf);
+      }
+    }, count, { slowReader: true });
+    expect(got.messages.length).to.equal(count);
+    for (let i: number = 0; i < count; i++) {
+      expect(got.messages[i].readUInt32LE(0)).to.equal(i);
+      expect(got.messages[i][4095]).to.equal(i & 0xff);
+    }
+  });
+
+  it('Should deliver every message sent before close(), then the close frame', async (): Promise<void> => {
+    const count: number = 2000;
+    const got: any = await collect((ws: WebSocket): void => {
+      for (let i: number = 0; i < count; i++) {
+        const buf: Buffer = Buffer.alloc(2048, 7);
+        buf.writeUInt32LE(i, 0);
+        ws.send(buf);
+      }
+      ws.close(4001, 'done');
+    }, count, { waitForClose: true, slowReader: true });
+    expect(got.messages.length).to.equal(count);
+    expect(got.messages[count - 1].readUInt32LE(0)).to.equal(count - 1);
+    expect(got.closed).to.equal(true);
+    expect(got.code).to.equal(4001);
+  });
+
+  it('Should survive terminate() with a burst in flight and keep serving', async (): Promise<void> => {
+    const got: any = await collect((ws: WebSocket): void => {
+      for (let i: number = 0; i < 2000; i++) { ws.send(Buffer.alloc(4096, 1)); }
+      setImmediate((): void => ws.terminate());
+    }, 1e9, { waitForClose: true, slowReader: true });
+    expect(got.closed).to.equal(true);
+    // the server is still usable afterwards
+    const again: any = await collect((ws: WebSocket): void => ws.send('after'), 1);
+    expect(again.messages[0].toString()).to.equal('after');
+  });
+
+  it('Should interleave callbacks, prepared payloads and plain sends in order', async (): Promise<void> => {
+    const prepared: PreparedMessage = new PreparedMessage(Buffer.from('shared-payload'));
+    const order: string[] = [];
+    const got: any = await collect((ws: WebSocket): void => {
+      ws.send('a');
+      ws.send('b', undefined, (): void => { order.push('cb-b'); });
+      ws.send(prepared, { binary: false, prefix: 'c:' });
+      ws.send('d');
+      ws.send('e', undefined, (): void => { order.push('cb-e'); });
+      ws.send(prepared, { binary: false });
+      ws.send('g');
+    }, 7);
+    expect(got.messages.map((m: Buffer) => m.toString())).to.deep.equal(['a', 'b', 'c:shared-payload', 'd', 'e', 'shared-payload', 'g']);
+    expect(order).to.deep.equal(['cb-b', 'cb-e']);
+  });
+});

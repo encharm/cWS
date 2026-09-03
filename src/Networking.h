@@ -210,8 +210,11 @@ struct WIN32_EXPORT NodeData {
     // pointer between every NodeData copy; main thread only. A sent message's block comes back
     // here without its memory being touched, so blocks the send worker read cost the JS thread
     // nothing on return, and the next send reuses a hot block instead of calling malloc.
-    static const int preAllocMaxSize = 4096;
+    static const int preAllocMaxSize = 16384;
     static const size_t poolCap = 1024;   // blocks kept per class; beyond that they are freed
+    // Slab: the block a corked socket frames its tick's plain messages into, back to back
+    // (see Socket::sendTransformed). One block, one iovec, one completion per socket per tick.
+    static const int slabSize = 16384;
     struct BlockPool {
         std::vector<char *> free[(preAllocMaxSize >> 4) + 1];
     };

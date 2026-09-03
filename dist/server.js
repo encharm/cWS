@@ -12,13 +12,23 @@ class WebSocketServer {
             connection: shared_1.noop,
         };
         let nativeOptions = 0;
+        let windowBits = 15;
+        let memLevel = 8;
         if (this.options.perMessageDeflate) {
             nativeOptions |= shared_1.PERMESSAGE_DEFLATE;
-            if (this.options.perMessageDeflate.serverNoContextTakeover === false) {
+            const deflate = typeof this.options.perMessageDeflate === 'object' ? this.options.perMessageDeflate : {};
+            if (deflate.serverNoContextTakeover === false) {
                 nativeOptions |= shared_1.SLIDING_DEFLATE_WINDOW;
             }
+            if (typeof deflate.windowBits === 'number') {
+                windowBits = deflate.windowBits;
+            }
+            if (typeof deflate.memLevel === 'number') {
+                memLevel = deflate.memLevel;
+            }
+            this.compressThreshold = typeof deflate.threshold === 'number' ? deflate.threshold : 0;
         }
-        this.serverGroup = shared_1.native.server.group.create(nativeOptions, this.options.maxPayload || shared_1.DEFAULT_PAYLOAD_LIMIT);
+        this.serverGroup = shared_1.native.server.group.create(nativeOptions, this.options.maxPayload || shared_1.DEFAULT_PAYLOAD_LIMIT, windowBits, memLevel);
         shared_1.setupNative(this.serverGroup, 'server', this);
         if (this.options.noServer) {
             return;

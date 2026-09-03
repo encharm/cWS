@@ -4,6 +4,12 @@ exports.WebSocket = void 0;
 const server_1 = require("./server");
 const shared_1 = require("./shared");
 const clientGroup = shared_1.native.client.group.create(0, shared_1.DEFAULT_PAYLOAD_LIMIT);
+function messageByteLength(message) {
+    if (typeof message === 'string') {
+        return Buffer.byteLength(message);
+    }
+    return message && typeof message.byteLength === 'number' ? message.byteLength : 0;
+}
 shared_1.setupNative(clientGroup, 'client');
 class WebSocket {
     constructor(url, options = {}) {
@@ -23,6 +29,7 @@ class WebSocket {
         if (!this.url && this.options.external) {
             this.socketType = 'server';
             this.external = this.options.external;
+            this.compressThreshold = this.options.compressThreshold;
         }
         else {
             shared_1.native.connect(clientGroup, url, this);
@@ -76,7 +83,14 @@ class WebSocket {
             if (options && options.binary === true) {
                 opCode = shared_1.OPCODE_BINARY;
             }
-            shared_1.native[this.socketType].send(this.external, message, opCode, cb ? () => process.nextTick(cb) : null, options && options.compress);
+            let compress = false;
+            if (options && options.compress !== undefined) {
+                compress = !!options.compress;
+            }
+            else if (this.compressThreshold !== undefined) {
+                compress = messageByteLength(message) >= this.compressThreshold;
+            }
+            shared_1.native[this.socketType].send(this.external, message, opCode, cb ? () => process.nextTick(cb) : null, compress);
         }
         else if (cb) {
             cb(new Error('Socket not connected'));

@@ -23,7 +23,7 @@ function setupNative(group, type, wsServer) {
     exports.native.setNoop(exports.noop);
     exports.native[type].group.onConnection(group, (external) => {
         if (type === 'server' && wsServer) {
-            const socket = new client_1.WebSocket(null, { external });
+            const socket = new client_1.WebSocket(null, { external, compressThreshold: wsServer.compressThreshold });
             exports.native.setUserData(external, socket);
             if (wsServer.upgradeCb) {
                 wsServer.upgradeCb(socket);

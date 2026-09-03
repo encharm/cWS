@@ -5,8 +5,11 @@
 
 namespace cWS {
 
-z_stream *Hub::allocateDefaultCompressor(z_stream *zStream) {
-    deflateInit2(zStream, 1, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY);
+// windowBits 9..15 and memLevel 1..9 select the per-socket memory tier (zlib uses
+// about 4x the window plus a 2^(memLevel+9) byte hash table): 15/8 = ~256 KB,
+// 12/5 = ~32 KB, 10/3 = ~8 KB, 9/2 = ~4 KB. Smaller tiers trade ratio for memory.
+z_stream *Hub::allocateDefaultCompressor(z_stream *zStream, int windowBits, int memLevel) {
+    deflateInit2(zStream, 1, Z_DEFLATED, -windowBits, memLevel, Z_DEFAULT_STRATEGY);
     return zStream;
 }
 

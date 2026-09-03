@@ -18,8 +18,9 @@ template <bool isServer>
 class ExtensionsNegotiator {
 protected:
     int options;
+    int serverMaxWindowBits;
 public:
-    ExtensionsNegotiator(int wantedOptions);
+    ExtensionsNegotiator(int wantedOptions, int serverMaxWindowBits = 15);
     std::string generateOffer();
     void readOffer(std::string offer);
     int getNegotiatedOptions();

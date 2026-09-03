@@ -425,3 +425,49 @@ async function createWSServer(ssl: boolean, server?: Server | HttpsServer): Prom
     // add more tests
   });
 });
+
+
+describe('CWS permessage-deflate', (): void => {
+  const port: number = 3002;
+
+  it('Should round-trip text and binary through a per-socket sliding window with a size threshold', (done: (err?: any) => void): void => {
+    const wsServer: WebSocketServer = new WebSocket.Server({
+      port,
+      perMessageDeflate: { serverNoContextTakeover: false, windowBits: 12, memLevel: 5, threshold: 64 },
+    }, (): void => {
+      const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: true });
+      const small: string = 'tiny';
+      const big: string = 'The quick brown fox jumps over the lazy dog. '.repeat(400);
+      const binary: Buffer = Buffer.alloc(20000);
+      for (let i: number = 0; i < binary.length; i++) { binary[i] = i % 251; }
+      const received: any[] = [];
+
+      client.on('open', (): void => {
+        client.send(small);
+        client.send(big);
+        client.send(binary);
+      });
+      client.on('message', (data: any, isBinary: boolean): void => {
+        received.push(isBinary ? Buffer.from(data) : data.toString());
+        if (received.length === 3) {
+          try {
+            expect(received[0]).to.equal(small);
+            expect(received[1]).to.equal(big);
+            expect(Buffer.compare(received[2], binary)).to.equal(0);
+          } catch (e) {
+            return done(e);
+          }
+          client.close();
+          wsServer.close((): void => done());
+        }
+      });
+      client.on('error', done);
+    });
+
+    wsServer.on('connection', (ws: WebSocket): void => {
+      ws.on('message', (message: any): void => {
+        ws.send(typeof message === 'string' ? message : Buffer.from(message));
+      });
+    });
+  });
+});

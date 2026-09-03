@@ -3,6 +3,13 @@ import { SocketAddress, ServerConfigs } from './index';
 import { native, setupNative, noop, DEFAULT_PAYLOAD_LIMIT, OPCODE_PING, OPCODE_BINARY, OPCODE_TEXT } from './shared';
 
 const clientGroup: any = native.client.group.create(0, DEFAULT_PAYLOAD_LIMIT);
+
+function messageByteLength(message: any): number {
+  if (typeof message === 'string') {
+    return Buffer.byteLength(message);
+  }
+  return message && typeof message.byteLength === 'number' ? message.byteLength : 0;
+}
 setupNative(clientGroup, 'client');
 
 export class WebSocket {
@@ -23,11 +30,13 @@ export class WebSocket {
 
   private external: any;
   private socketType: string = 'client';
+  private compressThreshold: number | undefined;
 
   constructor(public url: string, private options: any = {}) {
     if (!this.url && (this.options as any).external) {
       this.socketType = 'server';
       this.external = (this.options as any).external;
+      this.compressThreshold = (this.options as any).compressThreshold;
     } else {
       native.connect(clientGroup, url, this);
     }
@@ -102,7 +111,16 @@ export class WebSocket {
         opCode = OPCODE_BINARY;
       }
 
-      native[this.socketType].send(this.external, message, opCode, cb ? (): void => process.nextTick(cb) : null, options && options.compress);
+      // Explicit `compress` wins; otherwise compress when permessage-deflate was negotiated
+      // for this server and the message meets the configured size threshold.
+      let compress: boolean = false;
+      if (options && options.compress !== undefined) {
+        compress = !!options.compress;
+      } else if (this.compressThreshold !== undefined) {
+        compress = messageByteLength(message) >= this.compressThreshold;
+      }
+
+      native[this.socketType].send(this.external, message, opCode, cb ? (): void => process.nextTick(cb) : null, compress);
     } else if (cb) {
       cb(new Error('Socket not connected'));
     }

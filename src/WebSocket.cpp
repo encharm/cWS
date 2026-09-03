@@ -11,7 +11,8 @@ WebSocket<isServer>::WebSocket(bool perMessageDeflate, cS::Socket *socket) : cS:
 
     // if we are created in a group with sliding deflate window allocate it here
     if (Group<isServer>::from(this)->extensionOptions & SLIDING_DEFLATE_WINDOW) {
-        slidingDeflateWindow = Hub::allocateDefaultCompressor(new z_stream{});
+        Group<isServer> *group = Group<isServer>::from(this);
+        slidingDeflateWindow = Hub::allocateDefaultCompressor(new z_stream{}, group->deflateWindowBits, group->deflateMemLevel);
     }
 }
 

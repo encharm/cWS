@@ -9,6 +9,9 @@ import { native, noop, setupNative, APP_PING_CODE, PERMESSAGE_DEFLATE, SLIDING_D
 export class WebSocketServer {
   public upgradeCb: (ws: WebSocket) => void;
   public upgradeReq: HTTP.IncomingMessage;
+  // Messages of at least this many bytes are compressed on sockets that negotiated
+  // permessage-deflate; undefined when compression is off.
+  public compressThreshold: number | undefined;
   public registeredEvents: any = {
     close: noop,
     error: noop,
@@ -21,16 +24,26 @@ export class WebSocketServer {
 
   constructor(private options: ServerConfigs, cb: () => void = noop) {
     let nativeOptions: number = 0;
+    let windowBits: number = 15;
+    let memLevel: number = 8;
     if (this.options.perMessageDeflate) {
       // tslint:disable-next-line
       nativeOptions |= PERMESSAGE_DEFLATE;
-      if ((this.options.perMessageDeflate as { serverNoContextTakeover: boolean }).serverNoContextTakeover === false) {
+      const deflate: any = typeof this.options.perMessageDeflate === 'object' ? this.options.perMessageDeflate : {};
+      if (deflate.serverNoContextTakeover === false) {
         // tslint:disable-next-line
         nativeOptions |= SLIDING_DEFLATE_WINDOW;
       }
+      if (typeof deflate.windowBits === 'number') {
+        windowBits = deflate.windowBits;
+      }
+      if (typeof deflate.memLevel === 'number') {
+        memLevel = deflate.memLevel;
+      }
+      this.compressThreshold = typeof deflate.threshold === 'number' ? deflate.threshold : 0;
     }
 
-    this.serverGroup = native.server.group.create(nativeOptions, this.options.maxPayload || DEFAULT_PAYLOAD_LIMIT);
+    this.serverGroup = native.server.group.create(nativeOptions, this.options.maxPayload || DEFAULT_PAYLOAD_LIMIT, windowBits, memLevel);
     setupNative(this.serverGroup, 'server', this);
 
     if (this.options.noServer) {

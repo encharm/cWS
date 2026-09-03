@@ -18,7 +18,7 @@ protected:
         Group<CLIENT> *group;
     };
 
-    static z_stream *allocateDefaultCompressor(z_stream *zStream);
+    static z_stream *allocateDefaultCompressor(z_stream *zStream, int windowBits = 15, int memLevel = 8);
 
     z_stream inflationStream = {}, deflationStream = {};
     char *deflate(char *data, size_t &length, z_stream *slidingDeflateWindow);
@@ -32,8 +32,8 @@ protected:
 
 public:
     template <bool isServer>
-    Group<isServer> *createGroup(int extensionOptions = 0, unsigned int maxPayload = 16777216) {
-        return new Group<isServer>(extensionOptions, maxPayload, this, nodeData);
+    Group<isServer> *createGroup(int extensionOptions = 0, unsigned int maxPayload = 16777216, int deflateWindowBits = 15, int deflateMemLevel = 8) {
+        return new Group<isServer>(extensionOptions, maxPayload, this, nodeData, deflateWindowBits, deflateMemLevel);
     }
 
     template <bool isServer>

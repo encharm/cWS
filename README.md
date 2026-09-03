@@ -14,6 +14,7 @@ This table is true if you run ssl directly with `cws` (`Node.js`). In case if yo
 
 | cWS Version | Node 26 | Node 24  | Node 22 | Node 20 |
 |-------------|---------|----------|---------|----------
+| 4.7.0       |    X    |    X     |    X    |   X     |
 | 4.6.0       |    X    |    X     |    X    |   X     |
 | 4.5.3       |         |    X     |    X    |   X     |
 
@@ -174,7 +175,11 @@ const wsServer = new WebSocket.Server({
    * noDelay?: boolean (set socket no delay)
    * noServer?: boolean (use this when upgrade done outside of cws)
    * maxPayload?: number 
-   * perMessageDeflate?: boolean | { serverNoContextTakeover: boolean;}
+   * perMessageDeflate?: boolean | { serverNoContextTakeover?: boolean; windowBits?: number; memLevel?: number; threshold?: number }
+   *   true = shared compressor, no context takeover. serverNoContextTakeover: false = per-socket
+   *   sliding window (streaming compression; far better on small messages). windowBits 9..15 and
+   *   memLevel 1..9 pick its memory tier: 15/8 = ~256 KB per socket (default), 12/5 = ~32 KB, 10/3 = ~8 KB.
+   *   threshold = minimum message size in bytes to compress (default 0); send(..., { compress }) overrides.
    * verifyClient?: (info: ConnectionInfo, next: VerifyClientNext) => void (use to allow or decline connections)
    **/ 
  }, () => {

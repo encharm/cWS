@@ -7,6 +7,7 @@ export declare class WebSocketServer {
     private options;
     upgradeCb: (ws: WebSocket) => void;
     upgradeReq: HTTP.IncomingMessage;
+    compressThreshold: number | undefined;
     registeredEvents: any;
     private httpServer;
     private serverGroup;

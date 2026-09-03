@@ -14,7 +14,6 @@ export const DEFAULT_PAYLOAD_LIMIT: number = 16777216;
 
 export const native: any = ((): NodeRequire => {
   try {
-    console.log('log', `../dist/bindings/cws_${process.platform}_${process.arch}_node${process.versions.modules}`)
     return require(`../dist/bindings/cws_${process.platform}_${process.arch}_node${process.versions.modules}`);
   } catch (err) {
     err.message = err.message + ` check './node_modules/@encharm/cws/build_log.txt' for post install build logs`;
@@ -27,7 +26,7 @@ export function setupNative(group: any, type: string, wsServer?: WebSocketServer
 
   native[type].group.onConnection(group, (external: any): void => {
     if (type === 'server' && wsServer) {
-      const socket: WebSocket = new WebSocket(null, { external });
+      const socket: WebSocket = new WebSocket(null, { external, compressThreshold: wsServer.compressThreshold });
       native.setUserData(external, socket);
 
       if (wsServer.upgradeCb) {

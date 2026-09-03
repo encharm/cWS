@@ -1,3 +1,7 @@
+## Released 4.7.0
+* permessage-deflate: messages are now compressed by default once negotiated (previously only `send(..., { compress: true })` compressed anything). New options `threshold` (minimum size to compress), `windowBits` and `memLevel` (per-socket memory tier for the sliding window, advertised as `server_max_window_bits` when below 15).
+* Remove a leftover debug `console.log` on module load.
+
 ## Released 4.6.0
 * Add Node 26 support (ABI 147, V8 14.6): vendored `src/headers/26`, `MakeCallback` with explicit `async_context`, tagged internal-field reads via `BaseObject::FromJSObject`.
 * Cork writes per event-loop iteration: sends to the same socket within one tick go out in a single gathered write. Disable with `CWS_CORK=0`.

@@ -185,8 +185,14 @@ struct GroupData {
 
 template <bool isServer>
 void createGroup(const FunctionCallbackInfo<Value> &args) {
+  int windowBits = args.Length() > 2 && args[2]->IsNumber() ? (int) args[2].As<Integer>()->Value() : 15;
+  int memLevel = args.Length() > 3 && args[3]->IsNumber() ? (int) args[3].As<Integer>()->Value() : 8;
+  if (windowBits < 9) windowBits = 9;
+  if (windowBits > 15) windowBits = 15;
+  if (memLevel < 1) memLevel = 1;
+  if (memLevel > 9) memLevel = 9;
   cWS::Group<isServer> *group = hub.createGroup<isServer>(
-      args[0].As<Integer>()->Value(), args[1].As<Integer>()->Value());
+      args[0].As<Integer>()->Value(), args[1].As<Integer>()->Value(), windowBits, memLevel);
   group->setUserData(new GroupData);
   args.GetReturnValue().Set(External::New(args.GetIsolate(), group));
 }

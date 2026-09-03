@@ -12,6 +12,7 @@ export declare class WebSocket {
     registeredEvents: any;
     private external;
     private socketType;
+    private compressThreshold;
     constructor(url: string, options?: any);
     get bufferedAmount(): number;
     get _socket(): SocketAddress;

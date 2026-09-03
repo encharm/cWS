@@ -21,7 +21,10 @@ export declare type ServerConfigs = {
     noServer?: boolean;
     maxPayload?: number;
     perMessageDeflate?: boolean | {
-        serverNoContextTakeover: boolean;
+        serverNoContextTakeover?: boolean;
+        windowBits?: number;
+        memLevel?: number;
+        threshold?: number;
     };
     verifyClient?: (info: ConnectionInfo, next: VerifyClientNext) => void;
 };

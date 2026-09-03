@@ -210,7 +210,7 @@ void HttpSocket<isServer>::upgrade(const char *secKey, const char *extensions, s
         std::string extensionsResponse;
         if (extensionsLength) {
             Group<isServer> *group = Group<isServer>::from(this);
-            ExtensionsNegotiator<cWS::SERVER> extensionsNegotiator(group->extensionOptions);
+            ExtensionsNegotiator<cWS::SERVER> extensionsNegotiator(group->extensionOptions, group->deflateWindowBits);
             extensionsNegotiator.readOffer(std::string(extensions, extensionsLength));
             extensionsResponse = extensionsNegotiator.generateOffer();
             if (extensionsNegotiator.getNegotiatedOptions() & PERMESSAGE_DEFLATE) {

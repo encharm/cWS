@@ -76,7 +76,7 @@ ExtensionsParser::ExtensionsParser(const char *data, size_t length) {
 }
 
 template <bool isServer>
-ExtensionsNegotiator<isServer>::ExtensionsNegotiator(int wantedOptions) {
+ExtensionsNegotiator<isServer>::ExtensionsNegotiator(int wantedOptions, int serverMaxWindowBits) : serverMaxWindowBits(serverMaxWindowBits) {
     options = wantedOptions;
 }
 
@@ -99,6 +99,12 @@ std::string ExtensionsNegotiator<isServer>::generateOffer() {
         // negotiation offer.
         if (options & Options::SERVER_NO_CONTEXT_TAKEOVER) {
             //extensionsOffer += "; server_no_context_takeover";
+        }
+
+        // Tell the peer our LZ77 window is smaller than the default so it can
+        // size its inflate window accordingly (RFC 7692 section 7.1.2.1).
+        if (isServer && serverMaxWindowBits < 15) {
+            extensionsOffer += "; server_max_window_bits=" + std::to_string(serverMaxWindowBits);
         }
     }
 

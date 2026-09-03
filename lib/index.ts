@@ -23,7 +23,14 @@ export type ServerConfigs = {
   noDelay?: boolean,
   noServer?: boolean,
   maxPayload?: number,
-  perMessageDeflate?: boolean | { serverNoContextTakeover: boolean },
+  /**
+   * `true` enables permessage-deflate with a shared compressor (no context takeover).
+   * `serverNoContextTakeover: false` keeps a per-socket sliding window (streaming compression,
+   * much better on small messages); `windowBits` (9..15) and `memLevel` (1..9) pick its memory
+   * tier: 15/8 = ~256 KB per socket, 12/5 = ~32 KB, 10/3 = ~8 KB. Messages of at least `threshold`
+   * bytes are compressed (default 0 = all); `send(..., { compress })` overrides per message.
+   */
+  perMessageDeflate?: boolean | { serverNoContextTakeover?: boolean, windowBits?: number, memLevel?: number, threshold?: number },
   verifyClient?: (info: ConnectionInfo, next: VerifyClientNext) => void
 };
 

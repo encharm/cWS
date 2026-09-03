@@ -1,3 +1,6 @@
+## Released 4.8.1
+* Skip the kernel-level cork/uncork (two `setsockopt` calls) around every socket read when write corking is active; those writes leave in the end-of-tick gathered write anyway. Saves 1-2 us of server CPU per read.
+
 ## Released 4.8.0
 * Prebuilt bindings now compress with zlib-ng 2.2.4 (vendored in `deps/zlib-ng`, statically linked, native `zng_` API so it cannot collide with Node's zlib). Measured on a real RPC stream: level 1 costs 2.2-2.5 us/KB vs 5.6-8 us/KB with zlib. The node-gyp fallback build keeps using Node's zlib through the same `src/Zlib.cpp` wrapper.
 * New `perMessageDeflate.level` option (default 2) and a `zlibBackend` export naming the compiled-in implementation.

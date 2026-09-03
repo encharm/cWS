@@ -195,9 +195,15 @@ cS::Socket *WebSocket<isServer>::onData(cS::Socket *s, char *data, size_t length
 
     webSocket->hasOutstandingPong = false;
     if (!webSocket->isShuttingDown()) {
-        webSocket->cork(true);
+        // The kernel-level cork (TCP_CORK/TCP_NOPUSH) around a read only helps when
+        // replies are written immediately; with write corking they leave in one gathered
+        // write at the end of the tick, so skip the two setsockopt calls per read.
+        bool kernelCork = !webSocket->corkActive();
+        if (kernelCork) {
+            webSocket->cork(true);
+        }
         WebSocketProtocol<isServer, WebSocket<isServer>>::consume(data, (unsigned int) length, webSocket);
-        if (!webSocket->isClosed()) {
+        if (kernelCork && !webSocket->isClosed()) {
             webSocket->cork(false);
         }
     }

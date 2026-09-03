@@ -15,11 +15,15 @@
 #include <cstdint>
 #include <cstring>
 #include <cstddef>
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 
 namespace cWS {
 namespace microdeflate {
 
-// Worst case output for `length` input bytes (all literals at 9 bits + block overhead).
+// Worst case output for `length` input bytes (all literals at 9 bits + block overhead),
+// plus slack for the 8-byte stores of the bit writer.
 inline size_t bound(size_t length) {
     return length + length / 8 + 32;
 }
@@ -27,6 +31,9 @@ inline size_t bound(size_t length) {
 class Encoder {
     static const int HASH_BITS = 13;
     uint32_t table[1 << HASH_BITS];
+    // 8 more hash bits per slot: a candidate whose tag differs cannot match, and rejecting it
+    // here saves the dependent random load into the input that dominated the literal path.
+    uint8_t tags[1 << HASH_BITS];
 
     static const uint16_t *lenBase() { static const uint16_t t[29] = {3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258}; return t; }
     static const uint8_t *lenExtra() { static const uint8_t t[29] = {0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0}; return t; }
@@ -54,16 +61,61 @@ class Encoder {
     };
     static const Tables &tables() { static const Tables t; return t; }
 
+    // 64-bit accumulator flushed 8 bytes at a time with one unaligned store (the output
+    // buffer has slack for the over-write, see bound()). A put may carry up to 32 bits, so
+    // the accumulator is drained whenever more than 32 are pending.
     struct BitWriter {
         uint8_t *out; size_t pos = 0; uint64_t acc = 0; int n = 0;
-        inline void put(uint32_t v, int bits) { acc |= (uint64_t) v << n; n += bits; while (n >= 8) { out[pos++] = (uint8_t) acc; acc >>= 8; n -= 8; } }
-        inline void flushByte() { if (n) { out[pos++] = (uint8_t) acc; acc = 0; n = 0; } }
+        inline void put(uint32_t v, int bits) {
+            acc |= (uint64_t) v << n; n += bits;
+            if (n >= 32) { memcpy(out + pos, &acc, 8); pos += n >> 3; acc >>= n & ~7; n &= 7; }
+        }
+        inline void flushByte() { while (n > 0) { out[pos++] = (uint8_t) acc; acc >>= 8; n -= 8; } acc = 0; n = 0; }
     };
 
-    static inline uint32_t hash4(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return (v * 2654435761u) >> (32 - HASH_BITS); }
+    static inline uint32_t load32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
+    static inline uint64_t load64(const uint8_t *p) { uint64_t v; memcpy(&v, p, 8); return v; }
+    static inline uint32_t hash32(const uint8_t *p) { return load32(p) * 2654435761u; }
+    static inline uint32_t slot(uint32_t h) { return h >> (32 - HASH_BITS); }
+    static inline uint8_t tag(uint32_t h) { return (uint8_t) (h >> (32 - HASH_BITS - 8)); }
+    static inline int ctz64(uint64_t v) {
+#ifdef _MSC_VER
+        unsigned long r; _BitScanForward64(&r, v); return (int) r;
+#else
+        return __builtin_ctzll(v);
+#endif
+    }
+
+    // Length of the common prefix of a and b, at most `max`: 8 bytes per step while
+    // both sides have 8 bytes left (little-endian: the first differing byte is the
+    // lowest set byte of the xor), then byte by byte.
+    static inline size_t matchLength(const uint8_t *a, const uint8_t *b, size_t max) {
+        size_t m = 0;
+        while (m + 8 <= max) {
+            uint64_t x = load64(a + m) ^ load64(b + m);
+            if (x) return m + (ctz64(x) >> 3);
+            m += 8;
+        }
+        while (m < max && a[m] == b[m]) m++;
+        return m;
+    }
 
 public:
-    Encoder() { memset(table, 0xff, sizeof(table)); tables(); }
+    Encoder() { memset(table, 0xff, sizeof(table)); memset(tags, 0, sizeof(tags)); tables(); }
+
+    // Stored blocks: what an incompressible message costs, 5 bytes per 65535 plus the tail.
+    static size_t storeBlocks(const uint8_t *in, size_t length, uint8_t *out) {
+        size_t pos = 0;
+        for (size_t i = 0; i < length; ) {
+            size_t n = length - i > 65535 ? 65535 : length - i;
+            out[pos++] = 0; // BFINAL=0, BTYPE=00
+            out[pos++] = (uint8_t) n; out[pos++] = (uint8_t) (n >> 8);
+            out[pos++] = (uint8_t) ~n; out[pos++] = (uint8_t) (~n >> 8);
+            memcpy(out + pos, in + i, n); pos += n; i += n;
+        }
+        out[pos++] = 0; // empty stored block header, byte aligned; the 00 00 ff ff tail is implied
+        return pos;
+    }
 
     // `out` must have room for bound(length) bytes. Returns the compressed length
     // (without the 4-byte sync-flush tail).
@@ -74,21 +126,22 @@ public:
         size_t i = 0;
         const size_t limit = length >= 4 ? length - 4 : 0;
         while (i < limit) {
-            uint32_t h = hash4(in + i);
-            uint32_t cand = table[h];
-            table[h] = (uint32_t) i;
-            if (cand < i && i - cand <= 32768 && memcmp(in + cand, in + i, 4) == 0) {
+            uint32_t h = hash32(in + i), s = slot(h);
+            uint8_t g = tag(h);
+            uint32_t cand = table[s];
+            bool tagged = tags[s] == g;
+            table[s] = (uint32_t) i;
+            tags[s] = g;
+            if (tagged && cand < i && i - cand <= 32768 && load32(in + cand) == load32(in + i)) {
                 size_t maxLen = length - i; if (maxLen > 258) maxLen = 258;
-                size_t m = 4;
-                while (m < maxLen && in[cand + m] == in[i + m]) m++;
+                size_t m = 4 + matchLength(in + cand + 4, in + i + 4, maxLen - 4);
                 uint32_t dist = (uint32_t) (i - cand);
                 int lc = t.lenCode[m];
-                w.put(t.litCode[257 + lc], t.litBits[257 + lc]);
-                if (lenExtra()[lc]) w.put((uint32_t) (m - lenBase()[lc]), lenExtra()[lc]);
+                // length code + its extra bits in one put (at most 8 + 5 bits), same for distance (5 + 13)
+                w.put(t.litCode[257 + lc] | ((uint32_t) (m - lenBase()[lc]) << t.litBits[257 + lc]), t.litBits[257 + lc] + lenExtra()[lc]);
                 int dc = t.distCode[dist];
-                w.put(t.distCodeRev[dc], 5);
-                if (distExtra()[dc]) w.put(dist - distBase()[dc], distExtra()[dc]);
-                if (i + 1 < limit) table[hash4(in + i + 1)] = (uint32_t) (i + 1);
+                w.put(t.distCodeRev[dc] | ((dist - distBase()[dc]) << 5), 5 + distExtra()[dc]);
+                if (i + 1 < limit) { uint32_t h1 = hash32(in + i + 1); table[slot(h1)] = (uint32_t) (i + 1); tags[slot(h1)] = tag(h1); }
                 i += m;
             } else {
                 w.put(t.litCode[in[i]], t.litBits[in[i]]);
@@ -98,6 +151,9 @@ public:
         for (; i < length; i++) w.put(t.litCode[in[i]], t.litBits[in[i]]);
         w.put(t.litCode[256], t.litBits[256]);             // end of block
         w.put(0, 1); w.put(0, 2); w.flushByte();           // empty stored block: BFINAL=0, BTYPE=00, then byte-align
+        if (w.pos > length + 5 * (length / 65535 + 1) + 1) {
+            return storeBlocks(in, length, out); // incompressible: stored blocks are smaller
+        }
         out[w.pos++] = 0; out[w.pos++] = 0; out[w.pos++] = 0xff; out[w.pos++] = 0xff;
         return w.pos - 4;
     }

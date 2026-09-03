@@ -42,4 +42,4 @@ export { WebSocketServer } from './server';
 export const secureProtocol: string = 'TLSv1_2_method';
 
 /** DEFLATE implementation compiled into the native binding, e.g. 'zlib-ng 2.2.4'. */
-export { zlibBackend } from './shared';
+export { zlibBackend, sendThread } from './shared';

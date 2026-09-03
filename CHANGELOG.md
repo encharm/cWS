@@ -1,3 +1,6 @@
+## Released 4.9.0
+* Send worker thread: the end-of-tick gathered writes run on a dedicated thread (lock-free SPSC hand-off via the vendored `readerwriterqueue`), taking the kernel's TCP work off the JavaScript thread. Measured on a loaded EPYC: 30-65% less main-thread CPU per message, 1.7-2.2x fan-out throughput. `CWS_SEND_THREAD=0` disables; `sendThread` export reports status. A socket closed with a send in flight keeps its fd open until that send completes (prevents fd reuse races).
+
 ## Released 4.8.4
 * `npm install` no longer rebuilds the binding from source when a prebuilt one matches the platform and Node ABI. Since the node-gyp fallback was repaired in 4.8.0, every install on a machine with a compiler was silently replacing the shipped zlib-ng binding with a Node-zlib build. `CWS_FORCE_BUILD=1` forces the source build.
 

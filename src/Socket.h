@@ -2,6 +2,8 @@
 #define SOCKET_CWS_H
 
 #include "Networking.h"
+#include "SendWorker.h"
+#include <vector>
 #ifndef _WIN32
 #include <sys/uio.h>
 #endif
@@ -97,6 +99,39 @@ protected:
             totalLength += message->length;
         }
     } messageQueue;
+
+public:
+    // One in-flight worker-thread send per socket (see SendWorker.h). The frames it
+    // covers are moved out of messageQueue into the op, so nothing the worker reads
+    // can be freed underneath it; the main thread takes them back on completion.
+    // `socket` is nulled if the socket closes first, and the fd is then closed by the
+    // completion (never while the worker may still be inside a send on it).
+    struct SendOp {
+        Socket *socket;
+        NodeData *nodeData;
+        Queue::Message *head, *tail;
+        size_t bytes;
+        int count;
+        uv_os_sock_t fd;
+        ssize_t result;
+        int error;
+        bool closeFd;
+#ifdef _WIN32
+        WSABUF bufs[512];
+#else
+        struct iovec iov[512];
+#endif
+    };
+    static void performSend(SendOp *op);   // worker thread
+    static void sendComplete(SendOp *op);  // main thread
+protected:
+    SendOp *sendOp = nullptr;
+    // Set by setState<STATE>(): STATE::onEnd, so the completion path can end a socket on a hard error.
+    void (*endCb)(Socket *) = nullptr;
+
+    bool sendBusy() {
+        return sendOp != nullptr;
+    }
 
     int getPoll() {
         return state.poll;
@@ -258,7 +293,7 @@ protected:
         }
 
         if (events & UV_WRITABLE) {
-            if (!socket->messageQueue.empty() && (events & UV_WRITABLE)) {
+            if (!socket->messageQueue.empty() && (events & UV_WRITABLE) && !socket->sendBusy()) {
                 socket->cork(true);
                 while (true) {
                     Queue::Message *messagePtr = socket->messageQueue.front();
@@ -310,6 +345,7 @@ protected:
 
     template<class STATE>
     void setState() {
+        endCb = STATE::onEnd;
         if (ssl) {
             setCb(sslIoHandler<STATE>);
         } else {
@@ -348,6 +384,12 @@ protected:
 
     bool write(Queue::Message *message, bool &wasTransferred) {
         ssize_t sent = 0;
+        if (sendBusy()) {
+            // a worker send is in flight: anything written now must follow it
+            messageQueue.push(message);
+            wasTransferred = true;
+            return true;
+        }
         if (messageQueue.empty()) {
 
             if (ssl) {
@@ -486,7 +528,7 @@ protected:
 
 public:
     auto getBufferedAmount() {
-        return messageQueue.totalLength;
+        return messageQueue.totalLength + (sendOp ? sendOp->bytes : 0);
     }
 
     Socket(NodeData *nodeData, Loop *loop, uv_os_sock_t fd, SSL *ssl) : Poll(loop, fd), ssl(ssl), nodeData(nodeData) {
@@ -639,6 +681,19 @@ public:
             return;
         }
 
+        if (!ssl && SendWorker::active()) {
+            if (sendBusy()) {
+                return; // the completion submits what has queued up meanwhile
+            }
+            if (getPoll() & UV_WRITABLE) {
+                change(nodeData->loop, this, setPoll(UV_READABLE));
+            }
+            if (submitToWorker()) {
+                return;
+            }
+            // worker queue full: fall through and send synchronously this tick
+        }
+
         std::vector<PendingCallback> callbacks;
         bool stalled = false;
         while (!messageQueue.empty() && !stalled) {
@@ -675,7 +730,7 @@ public:
             return;
         }
         unregisterCork();
-        if (isClosed()) {
+        if (isClosed() || sendBusy()) {
             return;
         }
         while (!messageQueue.empty()) {
@@ -701,13 +756,82 @@ public:
         }
     }
 
+    // Moves up to 512 queued frames into an op and hands it to the worker thread.
+    bool submitToWorker() {
+        if (sendOp || messageQueue.empty() || isClosed()) {
+            return true;
+        }
+        SendOp *op = new SendOp();
+        op->socket = this;
+        op->nodeData = nodeData;
+        op->fd = getFd();
+        op->head = messageQueue.head;
+        op->bytes = 0;
+        op->count = 0;
+        op->result = 0;
+        op->error = 0;
+        op->closeFd = false;
+        Queue::Message *m = messageQueue.head, *last = nullptr;
+        while (m && op->count < 512) {
+#ifdef _WIN32
+            op->bufs[op->count].buf = (CHAR *) m->data;
+            op->bufs[op->count].len = (ULONG) m->length;
+#else
+            op->iov[op->count].iov_base = (void *) m->data;
+            op->iov[op->count].iov_len = m->length;
+#endif
+            op->bytes += m->length;
+            op->count++;
+            last = m;
+            m = m->nextMessage;
+        }
+        op->tail = last;
+        last->nextMessage = nullptr;
+        messageQueue.head = m;
+        if (!m) {
+            messageQueue.tail = nullptr;
+            messageQueue.totalLength = 0;
+        } else {
+            messageQueue.totalLength -= op->bytes;
+        }
+        if (!SendWorker::submit(op)) {
+            requeueFront(op);
+            delete op;
+            return false;
+        }
+        sendOp = op;
+        return true;
+    }
+
+    // Puts what is left of an op back at the head of the queue, in order.
+    void requeueFront(SendOp *op) {
+        if (!op->head) {
+            return;
+        }
+        op->tail->nextMessage = messageQueue.head;
+        messageQueue.head = op->head;
+        if (!messageQueue.tail) {
+            messageQueue.tail = op->tail;
+        }
+        messageQueue.totalLength += op->bytes;
+    }
+
     template <class T>
     void closeSocket() {
         unregisterCork();
         uv_os_sock_t fd = getFd();
         Context *netContext = nodeData->netContext;
         stop(nodeData->loop);
-        netContext->closeSocket(fd);
+        if (sendOp) {
+            // The worker may be inside a send on this fd: closing it now could let the
+            // number be reused by a new connection and receive our bytes. Orphan the op
+            // and let its completion close the fd.
+            sendOp->socket = nullptr;
+            sendOp->closeFd = true;
+            sendOp = nullptr;
+        } else {
+            netContext->closeSocket(fd);
+        }
 
         if (ssl) {
             SSL_free(ssl);

@@ -14,6 +14,7 @@ This table is true if you run ssl directly with `cws` (`Node.js`). In case if yo
 
 | cWS Version | Node 26 | Node 24  | Node 22 | Node 20 |
 |-------------|---------|----------|---------|----------
+| 4.9.0       |    X    |    X     |    X    |   X     |
 | 4.8.4       |    X    |    X     |    X    |   X     |
 | 4.8.3       |    X    |    X     |    X    |   X     |
 | 4.8.2       |    X    |    X     |    X    |   X     |
@@ -281,6 +282,12 @@ server.on('upgrade', (request, socket, head) => {
 All `send()` calls made to a socket during one event-loop iteration are framed immediately but written with a single gathered write (`writev`) when the iteration ends, instead of one syscall per `send()`. This is transparent to callers and preserves ordering; `send()` followed by `close()`/`terminate()` in the same tick still delivers the message. While writes are corked they are counted in `bufferedAmount` until the flush.
 
 Set `CWS_CORK=0` in the environment to disable it and write every message immediately (previous behaviour). Corking applies to plain TCP sockets only; TLS sockets always write immediately.
+
+### Send worker thread (performance)
+
+The gathered write itself (the kernel's TCP work, which dominates a busy socket server's CPU) runs on a dedicated worker thread, not on the JavaScript thread. The end-of-tick flush hands each socket's frames to the worker through a lock-free queue; the worker performs the send and reports back, and completions, callbacks and `bufferedAmount` are handled on the main thread as before. Per-socket ordering is preserved, `send()` followed by `close()`/`terminate()` in the same tick still delivers, and a socket that closes while its send is in flight keeps its fd open until the send has finished. Measured on a busy 96-thread EPYC: 30-65% less main-thread CPU per message and 1.7-2.2x fan-out throughput, for 10-25% more total CPU on the worker.
+
+Set `CWS_SEND_THREAD=0` to disable it (sends then happen on the main thread at the end of the tick). The `sendThread` export reports `'active'` or the reason it is not. TLS sockets always send on the main thread.
 
 ### Secure WebSocket
 You can use `wss://` with `cws` by providing `https` server to `cws` and setting `secureProtocol` on https options:

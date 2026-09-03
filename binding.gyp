@@ -13,11 +13,13 @@
                 'src/WebSocket.cpp',
                 'src/HTTPSocket.cpp',
                 'src/Socket.cpp',
-                'src/Zlib.cpp'
+                'src/Zlib.cpp',
+                'src/SendWorker.cpp'
             ],
             # Node private headers vendored per major (see src/headers/); the Makefile passes the same -I.
             'include_dirs': [
-                'src/headers/<!(node -p "parseInt(process.versions.node)")'
+                'src/headers/<!(node -p "parseInt(process.versions.node)")',
+                'deps/readerwriterqueue'
             ],
             'defines': ['HAVE_OPENSSL=1', 'NODE_WANT_INTERNALS=1'],
             'conditions': [

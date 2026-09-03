@@ -1,5 +1,5 @@
-CPP_SHARED := -DUSE_LIBUV -g -O3 -I ./src -shared -fPIC ./src/Extensions.cpp ./src/Group.cpp ./src/Networking.cpp ./src/Hub.cpp ./src/cSNode.cpp ./src/WebSocket.cpp ./src/HTTPSocket.cpp ./src/Socket.cpp ./src/Epoll.cpp ./src/Addon.cpp ./src/Zlib.cpp -Wno-deprecated-declarations -Wno-unused-result -fvisibility=hidden -DNODE_WANT_INTERNALS
-CPP_LINUX := -std=c++20
+CPP_SHARED := -DUSE_LIBUV -g -O3 -I ./src -shared -fPIC ./src/Extensions.cpp ./src/Group.cpp ./src/Networking.cpp ./src/Hub.cpp ./src/cSNode.cpp ./src/WebSocket.cpp ./src/HTTPSocket.cpp ./src/Socket.cpp ./src/Epoll.cpp ./src/Addon.cpp ./src/Zlib.cpp ./src/SendWorker.cpp -I deps/readerwriterqueue -Wno-deprecated-declarations -Wno-unused-result -fvisibility=hidden -DNODE_WANT_INTERNALS
+CPP_LINUX := -std=c++20 -pthread
 CPP_OSX := -std=c++20 -stdlib=libc++ -mmacosx-version-min=10.15 -undefined dynamic_lookup
 
 VER_115 := v20.10.0

@@ -24,6 +24,8 @@ void Initialize(Local<Object> exports) {
                String::NewFromUtf8(isolate, cWS::zlib::backend()).ToLocalChecked()).Check();
   hub.getNodeData()->corkState->enabled = corkEnabledFromEnv();
   registerCheck(isolate);
+  exports->Set(isolate->GetCurrentContext(), String::NewFromUtf8(isolate, "sendThread").ToLocalChecked(),
+               String::NewFromUtf8(isolate, cS::SendWorker::status()).ToLocalChecked()).Check();
 }
 
 NODE_MODULE(addon, Initialize)

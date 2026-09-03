@@ -6,6 +6,7 @@
 #include <openssl/ssl.h>
 #include <uv.h>
 #include <cstring>
+#include "SendWorker.h"
 
 #define NODE_WANT_INTERNALS 1
 
@@ -96,6 +97,11 @@ void registerCheck(Isolate *isolate) {
     cS::Socket::flushCorked(hub.getNodeData());
   });
   uv_unref((uv_handle_t *)&check);
+
+  // Send worker thread: only meaningful with corking, whose end-of-tick flush feeds it.
+  if (hub.getNodeData()->corkState->enabled) {
+    cS::SendWorker::init((uv_loop_t *)hub.getLoop());
+  }
 
   uv_prepare_init((uv_loop_t *)hub.getLoop(), &corkPrepare);
   uv_prepare_start(&corkPrepare, [](uv_prepare_t *) {

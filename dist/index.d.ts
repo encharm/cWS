@@ -32,4 +32,4 @@ export declare type ServerConfigs = {
 export { WebSocket } from './client';
 export { WebSocketServer } from './server';
 export declare const secureProtocol: string;
-export { zlibBackend } from './shared';
+export { zlibBackend, sendThread } from './shared';

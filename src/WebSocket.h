@@ -12,6 +12,23 @@ struct Group;
 template <bool isServer>
 struct HttpSocket;
 
+// A payload prepared once and sent to many sockets with sendShared() (fan-out). Holds the
+// raw bytes and, after the first compressed send, their DEFLATE blocks: the same bytes a
+// regular compressed send would carry (sync-flush tail stripped). Reference counted: the
+// creator holds one reference, every queued message holds one until it completes.
+struct SharedPayload {
+    std::string raw;
+    std::string deflated;
+    bool deflatedReady = false;
+    int references = 1;
+
+    static void unref(SharedPayload *payload) {
+        if (!--payload->references) {
+            delete payload;
+        }
+    }
+};
+
 template <const bool isServer>
 struct WIN32_EXPORT WebSocket : cS::Socket, WebSocketState<isServer> {
 protected:
@@ -74,6 +91,10 @@ public:
     void ping(const char *message) {send(message, OpCode::PING);}
     void send(const char *message, OpCode opCode = OpCode::TEXT) {send(message, strlen(message), opCode);}
     void send(const char *message, size_t length, OpCode opCode, void(*callback)(WebSocket<isServer> *webSocket, void *data, bool cancelled, void *reserved) = nullptr, void *callbackData = nullptr, bool compress = false);
+    static SharedPayload *prepareShared(const char *data, size_t length);
+    // One frame carrying prefix + payload without copying or re-compressing the payload. Not thread safe.
+    void sendShared(const char *prefix, size_t prefixLength, SharedPayload *payload, OpCode opCode, bool compress,
+                    void(*callback)(WebSocket<isServer> *webSocket, void *data, bool cancelled, void *reserved) = nullptr, void *callbackData = nullptr);
     static PreparedMessage *prepareMessage(char *data, size_t length, OpCode opCode, bool compressed, void(*callback)(WebSocket<isServer> *webSocket, void *data, bool cancelled, void *reserved) = nullptr);
     static PreparedMessage *prepareMessageBatch(std::vector<std::string> &messages, std::vector<int> &excludedMessages,
                                                 OpCode opCode, bool compressed, void(*callback)(WebSocket<isServer> *webSocket, void *data, bool cancelled, void *reserved) = nullptr);

@@ -37,6 +37,7 @@ export type ServerConfigs = {
 };
 
 export { WebSocket } from './client';
+export { PreparedMessage } from './prepared';
 export { WebSocketServer } from './server';
 
 export const secureProtocol: string = 'TLSv1_2_method';

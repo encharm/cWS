@@ -5,10 +5,10 @@ import { connect as tlsConnect } from 'tls';
 import { Server } from 'http';
 import { createServer as createServerHttps, Server as HttpsServer } from 'https';
 
-import { WebSocket, WebSocketServer, secureProtocol } from '../lib';
+import { WebSocket, WebSocketServer, PreparedMessage, secureProtocol } from '../lib';
 
 import { WebSocket as WSWebSocket } from 'ws';
-import { deflateRawSync } from 'zlib';
+import { constants as zlibConstants, deflateRawSync, inflateRawSync } from 'zlib';
 import { randomBytes } from 'crypto';
 
 
@@ -554,5 +554,127 @@ describe('CWS permessage-deflate shared mode (independent messages)', (): void =
     wsServer.on('connection', (ws: WebSocket): void => {
       ws.on('message', (message: any): void => { ws.send(typeof message === 'string' ? message : Buffer.from(message)); });
     });
+  });
+});
+
+describe('CWS prepared messages (shared payload fan-out)', (): void => {
+  const port: number = 3005;
+  const payloadText: string = JSON.stringify({ jams: Array.from({ length: 40 }, (_: unknown, i: number) => ({ shortId: `jam${i}`, users: i * 3, team: 'team-a' })) });
+  const payload: Buffer = Buffer.from(payloadText);
+
+  // Connects `count` ws clients, lets the server call `send` for each, resolves with what every client received.
+  function fanOut(deflate: any, clientDeflate: boolean, count: number, send: (ws: WebSocket) => void, expectedPerClient: number): Promise<Buffer[][]> {
+    return new Promise((resolve: (v: Buffer[][]) => void, reject: (e: any) => void): void => {
+      const received: Buffer[][] = [];
+      const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: deflate }, (): void => {
+        for (let i: number = 0; i < count; i++) {
+          const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: clientDeflate });
+          const mine: Buffer[] = [];
+          received.push(mine);
+          client.on('message', (data: Buffer, isBinary: boolean): void => {
+            mine.push(isBinary ? data : Buffer.from(`text:${data.toString()}`));
+            if (received.every((r: Buffer[]) => r.length >= expectedPerClient)) {
+              wsServer.close((): void => resolve(received));
+            }
+          });
+          client.on('error', reject);
+        }
+      });
+      wsServer.on('connection', (ws: WebSocket): void => send(ws));
+    });
+  }
+
+  it('Should send prefix + prepared payload to many clients without deflate', async (): Promise<void> => {
+    const prepared: PreparedMessage = new PreparedMessage(payload);
+    let callbacks: number = 0;
+    const got: Buffer[][] = await fanOut(false, false, 3, (ws: WebSocket): void => {
+      ws.send(prepared, { prefix: Buffer.from('prefix:') }, (): void => { callbacks++; });
+      ws.send(prepared, { prefix: Buffer.from('again:') });
+    }, 2);
+    expect(prepared.byteLength).to.equal(payload.length);
+    for (let i: number = 0; i < 3; i++) {
+      expect(got[i][0].equals(Buffer.concat([Buffer.from('prefix:'), payload]))).to.equal(true);
+      expect(got[i][1].equals(Buffer.concat([Buffer.from('again:'), payload]))).to.equal(true);
+    }
+    expect(callbacks).to.equal(3);
+  });
+
+  it('Should send text frames when binary is false', async (): Promise<void> => {
+    const prepared: PreparedMessage = new PreparedMessage(Buffer.from('shared text'));
+    const got: Buffer[][] = await fanOut(false, false, 1, (ws: WebSocket): void => {
+      ws.send(prepared, { binary: false, prefix: 'hello ' });
+    }, 1);
+    expect(got[0][0].toString()).to.equal('text:hello shared text');
+  });
+
+  it('Should splice the prefix ahead of cached deflate blocks in shared mode', async (): Promise<void> => {
+    const prepared: PreparedMessage = new PreparedMessage(payload);
+    const got: Buffer[][] = await fanOut({ threshold: 16 }, true, 3, (ws: WebSocket): void => {
+      ws.send(prepared, { prefix: Buffer.from('compressed:') });
+      ws.send(prepared);
+      ws.send(prepared, { compress: false, prefix: Buffer.from('tiny') });
+    }, 3);
+    for (let i: number = 0; i < 3; i++) {
+      expect(got[i][0].equals(Buffer.concat([Buffer.from('compressed:'), payload]))).to.equal(true);
+      expect(got[i][1].equals(payload)).to.equal(true);
+      expect(got[i][2].equals(Buffer.concat([Buffer.from('tiny'), payload]))).to.equal(true);
+    }
+  });
+
+  it('Should fall back to per-socket compression with context takeover', async (): Promise<void> => {
+    const prepared: PreparedMessage = new PreparedMessage(payload);
+    const got: Buffer[][] = await fanOut({ serverNoContextTakeover: false, threshold: 16 }, true, 2, (ws: WebSocket): void => {
+      ws.send(prepared, { prefix: Buffer.from('takeover:') });
+      ws.send(payload);
+      ws.send(prepared, { prefix: Buffer.from('takeover-again:') });
+    }, 3);
+    for (let i: number = 0; i < 2; i++) {
+      expect(got[i][0].equals(Buffer.concat([Buffer.from('takeover:'), payload]))).to.equal(true);
+      expect(got[i][1].equals(payload)).to.equal(true);
+      expect(got[i][2].equals(Buffer.concat([Buffer.from('takeover-again:'), payload]))).to.equal(true);
+    }
+  });
+
+  it('Should emit one RSV1 frame whose payload is a stored prefix block followed by the shared blocks', (done: (err?: any) => void): void => {
+    const prefix: Buffer = Buffer.from('raw-prefix:');
+    const prepared: PreparedMessage = new PreparedMessage(payload);
+    const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { threshold: 16 } }, (): void => {
+      const socket: any = connect(port, '127.0.0.1');
+      let buffer: Buffer = Buffer.alloc(0);
+      let handshakeDone: boolean = false;
+      socket.on('connect', (): void => {
+        socket.write(`GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n`);
+      });
+      socket.on('data', (data: Buffer): void => {
+        buffer = Buffer.concat([buffer, data]);
+        if (!handshakeDone) {
+          const end: number = buffer.indexOf('\r\n\r\n');
+          if (end < 0) { return; }
+          handshakeDone = true;
+          buffer = buffer.subarray(end + 4);
+        }
+        if (buffer.length < 4) { return; }
+        const lengthByte: number = buffer[1] & 0x7f;
+        const headerLength: number = lengthByte === 126 ? 4 : lengthByte === 127 ? 10 : 2;
+        const frameLength: number = lengthByte === 126 ? buffer.readUInt16BE(2) : lengthByte === 127 ? Number(buffer.readBigUInt64BE(2)) : lengthByte;
+        if (buffer.length < headerLength + frameLength) { return; }
+        const body: Buffer = buffer.subarray(headerLength, headerLength + frameLength);
+        try {
+          expect(buffer[0]).to.equal(0x80 | 0x40 | 0x2); // FIN, RSV1, binary
+          expect(body[0]).to.equal(0); // stored block: BFINAL=0, BTYPE=00
+          expect(body.readUInt16LE(1)).to.equal(prefix.length);
+          expect(body.readUInt16LE(3)).to.equal(~prefix.length & 0xffff);
+          expect(body.subarray(5, 5 + prefix.length).equals(prefix)).to.equal(true);
+          const inflated: Buffer = inflateRawSync(Buffer.concat([body, Buffer.from([0, 0, 0xff, 0xff])]), { finishFlush: zlibConstants.Z_SYNC_FLUSH });
+          expect(inflated.equals(Buffer.concat([prefix, payload]))).to.equal(true);
+          expect(frameLength).to.be.lessThan(payload.length / 2);
+        } catch (e) {
+          return done(e);
+        }
+        socket.destroy();
+        wsServer.close((): void => done());
+      });
+    });
+    wsServer.on('connection', (ws: WebSocket): void => ws.send(prepared, { prefix: prefix }));
   });
 });

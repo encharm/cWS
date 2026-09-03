@@ -1,6 +1,7 @@
 import { WebSocketServer } from './server';
 import { SocketAddress, ServerConfigs } from './index';
 import { native, setupNative, noop, DEFAULT_PAYLOAD_LIMIT, OPCODE_PING, OPCODE_BINARY, OPCODE_TEXT } from './shared';
+import { PreparedMessage } from './prepared';
 
 const clientGroup: any = native.client.group.create(0, DEFAULT_PAYLOAD_LIMIT);
 
@@ -101,8 +102,18 @@ export class WebSocket {
     this.registeredEvents[event] = listener;
   }
 
-  public send(message: string | Buffer, options?: { binary?: boolean, compress?: boolean }, cb?: (err?: Error) => void): void {
+  /**
+   * `message` may be a `PreparedMessage`: a payload prepared once for many sockets. It is then
+   * neither copied nor compressed per socket; `options.prefix` (a per-socket header) is spliced
+   * in front of it inside the same frame. Prepared messages are binary unless `binary: false`.
+   */
+  public send(
+    message: string | Buffer | ArrayBufferView | PreparedMessage,
+    options?: { binary?: boolean, compress?: boolean, prefix?: string | Buffer | ArrayBufferView },
+    cb?: (err?: Error) => void
+  ): void {
     if (this.external) {
+      const prepared: boolean = message instanceof PreparedMessage;
       let opCode: number = typeof message === 'string' ? OPCODE_TEXT : OPCODE_BINARY;
 
       // provided options should always overwrite default
@@ -120,10 +131,15 @@ export class WebSocket {
       if (options && options.compress !== undefined) {
         compress = !!options.compress;
       } else if (this.compressThreshold !== undefined) {
-        compress = messageByteLength(message) >= this.compressThreshold;
+        compress = messageByteLength(message) + (options && options.prefix ? messageByteLength(options.prefix) : 0) >= this.compressThreshold;
       }
 
-      this.nativeApi.send(this.external, message, opCode, cb ? (): void => process.nextTick(cb) : null, compress);
+      const callback: (() => void) | null = cb ? (): void => process.nextTick(cb) : null;
+      if (prepared) {
+        this.nativeApi.sendShared(this.external, options && options.prefix, (message as PreparedMessage).external, opCode, callback, compress);
+      } else {
+        this.nativeApi.send(this.external, message, opCode, callback, compress);
+      }
     } else if (cb) {
       cb(new Error('Socket not connected'));
     }

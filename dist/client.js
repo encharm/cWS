@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.WebSocket = void 0;
 const server_1 = require("./server");
 const shared_1 = require("./shared");
+const prepared_1 = require("./prepared");
 const clientGroup = shared_1.native.client.group.create(0, shared_1.DEFAULT_PAYLOAD_LIMIT);
 function messageByteLength(message) {
     if (typeof message === 'string') {
@@ -78,6 +79,7 @@ class WebSocket {
     }
     send(message, options, cb) {
         if (this.external) {
+            const prepared = message instanceof prepared_1.PreparedMessage;
             let opCode = typeof message === 'string' ? shared_1.OPCODE_TEXT : shared_1.OPCODE_BINARY;
             if (options && options.binary === false) {
                 opCode = shared_1.OPCODE_TEXT;
@@ -90,9 +92,15 @@ class WebSocket {
                 compress = !!options.compress;
             }
             else if (this.compressThreshold !== undefined) {
-                compress = messageByteLength(message) >= this.compressThreshold;
+                compress = messageByteLength(message) + (options && options.prefix ? messageByteLength(options.prefix) : 0) >= this.compressThreshold;
             }
-            this.nativeApi.send(this.external, message, opCode, cb ? () => process.nextTick(cb) : null, compress);
+            const callback = cb ? () => process.nextTick(cb) : null;
+            if (prepared) {
+                this.nativeApi.sendShared(this.external, options && options.prefix, message.external, opCode, callback, compress);
+            }
+            else {
+                this.nativeApi.send(this.external, message, opCode, callback, compress);
+            }
         }
         else if (cb) {
             cb(new Error('Socket not connected'));

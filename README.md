@@ -294,6 +294,21 @@ With permessage-deflate enabled, compression of outgoing messages also runs on t
 
 Set `CWS_SEND_THREAD=0` to disable it (sends and compression then happen on the main thread at the end of the tick). The `sendThread` export reports `'active'` or the reason it is not. TLS sockets always send on the main thread.
 
+### Prepared messages (fan-out)
+
+When one payload goes to many sockets with only a small per-socket prefix in front of it (an RPC header, a subscription id), prepare it once:
+
+```js
+const { PreparedMessage } = require('@encharm/cws');
+
+const prepared = new PreparedMessage(payloadBytes);          // copied into native memory once
+for (const ws of subscribers) {
+  ws.send(prepared, { prefix: headerFor(ws) });               // one frame: header + payload
+}
+```
+
+`send` accepts a `PreparedMessage` wherever it accepts a buffer, plus a `prefix` option (a per-socket header, string or bytes) spliced in front of the payload inside the same frame. `binary` defaults to `true` for prepared messages; `compress` defaults to the server's `threshold` applied to the total length. The payload is never copied or compressed per socket: without deflate it is a second gather buffer in the end-of-tick write; with the shared compressor it is deflated once, on the first compressed send, and the prefix is spliced in front as a DEFLATE stored block. Sockets negotiated with context takeover (`serverNoContextTakeover: false`) and client sockets fall back to the regular path. Handles are released when garbage collected; sends in flight keep their own reference.
+
 ### Secure WebSocket
 You can use `wss://` with `cws` by providing `https` server to `cws` and setting `secureProtocol` on https options:
 

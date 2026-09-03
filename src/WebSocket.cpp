@@ -82,6 +82,155 @@ void WebSocket<isServer>::materialize(cS::Socket *s, cS::Socket::Queue::Message 
     cS::Socket::materializeOnMain(s, m, stream, !webSocket->slidingDeflateWindow, hub->zlibBuffer, Hub::LARGE_BUFFER_SIZE, hub->dynamicZlibBuffer);
 }
 
+template <bool isServer>
+SharedPayload *WebSocket<isServer>::prepareShared(const char *data, size_t length) {
+    SharedPayload *payload = new SharedPayload;
+    payload->raw.assign(data, length);
+    return payload;
+}
+
+namespace {
+struct SharedCallback {
+    void (*callback)(void *socket, void *data, bool cancelled, void *reserved);
+    void *data;
+};
+
+// Completion of the shared part of a sendShared() frame: drops the payload reference,
+// then runs the caller's callback. `socket` is null when the send was orphaned by a close.
+void sharedSent(void *socket, void *data, bool cancelled, void *reserved) {
+    SharedPayload::unref((SharedPayload *) data);
+    if (reserved) {
+        SharedCallback *c = (SharedCallback *) reserved;
+        c->callback(socket, c->data, cancelled, nullptr);
+        delete c;
+    }
+}
+}
+
+/*
+ * Sends prefix + payload as one frame. The frame is queued as two messages: an owned
+ * one with the header and the prefix, and a borrowed one pointing into the payload, so
+ * nothing is copied or compressed per recipient.
+ *
+ * Compressed: the prefix goes out as DEFLATE stored blocks in front of the payload's
+ * pre-built blocks. That is valid because those blocks were produced from the payload
+ * alone, so no match reaches back before their start. It needs a socket without context
+ * takeover (no sliding window): with takeover the per-socket window would not contain
+ * these bytes, so that case, like the client role (masking rewrites every byte), takes
+ * the regular copying path.
+ */
+template <bool isServer>
+void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, SharedPayload *payload, OpCode opCode, bool compress,
+                                     void(*callback)(WebSocket<isServer> *webSocket, void *data, bool cancelled, void *reserved), void *callbackData) {
+    bool deflate = compress && compressionStatus == WebSocket<isServer>::CompressionStatus::ENABLED && opCode < 3;
+    if (!isServer || (deflate && slidingDeflateWindow) || payload->raw.empty()) {
+        std::string whole;
+        whole.reserve(prefixLength + payload->raw.size());
+        whole.append(prefix, prefixLength).append(payload->raw);
+        send(whole.data(), whole.size(), opCode, callback, callbackData, compress);
+        return;
+    }
+    if (isClosed()) {
+        if (callback) {
+            callback(this, callbackData, true, nullptr);
+        }
+        return;
+    }
+
+    const char *body;
+    size_t bodyLength;
+    if (deflate) {
+        if (!payload->deflatedReady) {
+            size_t length = payload->raw.size();
+            char *out = Group<isServer>::from(this)->hub->deflate((char *) payload->raw.data(), length, nullptr);
+            payload->deflated.assign(out, length);
+            payload->deflatedReady = true;
+        }
+        body = payload->deflated.data();
+        bodyLength = payload->deflated.size();
+    } else {
+        body = payload->raw.data();
+        bodyLength = payload->raw.size();
+    }
+
+    // a stored block carries at most 65535 bytes: 1 byte header, LEN, NLEN
+    const size_t STORED_MAX = 65535;
+    size_t storedBlocks = deflate ? (prefixLength + STORED_MAX - 1) / STORED_MAX : 0;
+    size_t prefixPart = prefixLength + storedBlocks * 5;
+    const size_t MAX_HEADER = 14;
+
+    Queue::Message *first = allocMessage(MAX_HEADER + prefixPart);
+    char *dst = (char *) first->data;
+    char *p = dst + WebSocketProtocol<isServer, WebSocket<isServer>>::formatMessage(dst, dst, 0, opCode, prefixPart + bodyLength, deflate);
+    if (deflate) {
+        const char *src = prefix;
+        for (size_t remaining = prefixLength; remaining; ) {
+            size_t n = remaining > STORED_MAX ? STORED_MAX : remaining;
+            *p++ = 0; // BFINAL=0, BTYPE=00, already byte aligned
+            *p++ = (char) (n & 0xff);
+            *p++ = (char) (n >> 8);
+            *p++ = (char) (~n & 0xff);
+            *p++ = (char) ((~n >> 8) & 0xff);
+            memcpy(p, src, n);
+            p += n;
+            src += n;
+            remaining -= n;
+        }
+    } else {
+        memcpy(p, prefix, prefixLength);
+        p += prefixLength;
+    }
+    first->length = p - dst;
+
+    int memoryIndex = nodeData->getMemoryBlockIndex(sizeof(Queue::Message));
+    Queue::Message *second = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
+    second->data = body;
+    second->length = bodyLength;
+    second->nextMessage = nullptr;
+    second->poolIndex = memoryIndex;
+    second->ownsData = false;
+    second->compressPending = false;
+    second->opCode = 0;
+    second->callback = sharedSent;
+    second->callbackData = payload;
+    second->reserved = callback ? new SharedCallback{(void(*)(void *, void *, bool, void *)) callback, callbackData} : nullptr;
+    payload->references++;
+
+    if (corkActive()) {
+        enqueue(first);
+        enqueue(second);
+        if (!corkPending) {
+            corkPending = true;
+            nodeData->corkState->pending.push_back(this);
+        }
+        return;
+    }
+
+    // no write corking (CWS_CORK=0, TLS): write now, queue what does not fit, keep order
+    bool wasTransferred;
+    if (!write(first, wasTransferred)) {
+        freeMessage(first);
+        void *reserved = second->reserved;
+        nodeData->freeSmallMemoryBlock((char *) second, memoryIndex);
+        sharedSent(this, payload, true, reserved);
+        return;
+    }
+    if (!wasTransferred) {
+        freeMessage(first);
+    }
+    if (!write(second, wasTransferred)) {
+        void *reserved = second->reserved;
+        nodeData->freeSmallMemoryBlock((char *) second, memoryIndex);
+        sharedSent(this, payload, true, reserved);
+        return;
+    }
+    if (!wasTransferred) {
+        void *reserved = second->reserved;
+        nodeData->freeSmallMemoryBlock((char *) second, memoryIndex);
+        sharedSent(this, payload, false, reserved);
+    }
+}
+
 /*
  * Prepares a single message for use with sendPrepared.
  *

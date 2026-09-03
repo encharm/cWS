@@ -30,6 +30,7 @@ export declare type ServerConfigs = {
     verifyClient?: (info: ConnectionInfo, next: VerifyClientNext) => void;
 };
 export { WebSocket } from './client';
+export { PreparedMessage } from './prepared';
 export { WebSocketServer } from './server';
 export declare const secureProtocol: string;
 export { zlibBackend, sendThread } from './shared';

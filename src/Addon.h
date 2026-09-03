@@ -645,6 +645,44 @@ void sendPrepared(const FunctionCallbackInfo<Value> &args) {
 }
 
 template <bool isServer>
+void prepareShared(const FunctionCallbackInfo<Value> &args) {
+  NativeString nativeString(args.GetIsolate(), args[0]);
+  args.GetReturnValue().Set(External::New(
+      args.GetIsolate(),
+      cWS::WebSocket<isServer>::prepareShared(nativeString.getData(),
+                                              nativeString.getLength())));
+}
+
+template <bool isServer>
+void releaseShared(const FunctionCallbackInfo<Value> &args) {
+  cWS::SharedPayload::unref(
+      (cWS::SharedPayload *)args[0].As<External>()->Value());
+}
+
+// (socket, prefix, payload, opCode, callback, compress)
+template <bool isServer>
+void sendShared(const FunctionCallbackInfo<Value> &args) {
+  NativeString prefix(args.GetIsolate(), args[1]);
+  cWS::SharedPayload *payload =
+      (cWS::SharedPayload *)args[2].As<External>()->Value();
+  cWS::OpCode opCode = (cWS::OpCode)args[3].As<Integer>()->Value();
+
+  SendCallbackData *sc = nullptr;
+  void (*callback)(cWS::WebSocket<isServer> *, void *, bool, void *) = nullptr;
+  if (args[4]->IsFunction()) {
+    callback = sendCallback;
+    sc = new SendCallbackData;
+    sc->jsCallback.Reset(args.GetIsolate(), Local<Function>::Cast(args[4]));
+    sc->isolate = args.GetIsolate();
+  }
+  bool compress = args[5].As<Boolean>()->Value();
+
+  unwrapSocket<isServer>(args[0].As<External>())
+      ->sendShared(prefix.getData(), prefix.getLength(), payload, opCode,
+                   compress, callback, sc);
+}
+
+template <bool isServer>
 void finalizeMessage(const FunctionCallbackInfo<Value> &args) {
   cWS::WebSocket<isServer>::finalizeMessage(
       (typename cWS::WebSocket<isServer>::PreparedMessage *)args[0]
@@ -723,6 +761,9 @@ struct Namespace {
     NODE_SET_METHOD(object, "prepareMessage", prepareMessage<isServer>);
     NODE_SET_METHOD(object, "sendPrepared", sendPrepared<isServer>);
     NODE_SET_METHOD(object, "finalizeMessage", finalizeMessage<isServer>);
+    NODE_SET_METHOD(object, "prepareShared", prepareShared<isServer>);
+    NODE_SET_METHOD(object, "sendShared", sendShared<isServer>);
+    NODE_SET_METHOD(object, "releaseShared", releaseShared<isServer>);
 
     Local<Object> group = Object::New(isolate);
     NODE_SET_METHOD(group, "onConnection", onConnection<isServer>);

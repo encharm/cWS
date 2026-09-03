@@ -1,6 +1,7 @@
 /// <reference types="node" />
 import { WebSocketServer } from './server';
 import { SocketAddress, ServerConfigs } from './index';
+import { PreparedMessage } from './prepared';
 export declare class WebSocket {
     url: string;
     private options;
@@ -28,9 +29,10 @@ export declare class WebSocket {
     on(event: 'error', listener: (err: Error) => void): void;
     on(event: 'message', listener: (message: string | any) => void): void;
     on(event: 'close', listener: (code?: number, reason?: string) => void): void;
-    send(message: string | Buffer, options?: {
+    send(message: string | Buffer | ArrayBufferView | PreparedMessage, options?: {
         binary?: boolean;
         compress?: boolean;
+        prefix?: string | Buffer | ArrayBufferView;
     }, cb?: (err?: Error) => void): void;
     ping(message?: string | Buffer): void;
     close(code?: number, reason?: string): void;

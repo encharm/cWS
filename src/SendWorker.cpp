@@ -78,10 +78,25 @@ namespace {
     }
 #endif
 
+    // Dequeues everything first and prefetches each op: the worker wrote result/error into
+    // the op's first line, so touching them one by one would serialize a cross-core miss
+    // per socket; issued together they overlap.
     void drainCompletions() {
-        Socket::SendOp *op;
-        while (toMain->try_dequeue(op)) {
-            Socket::sendComplete(op);
+        Socket::SendOp *ops[64];
+        for (;;) {
+            size_t n = 0;
+            while (n < 64 && toMain->try_dequeue(ops[n])) {
+#if defined(__GNUC__) || defined(__clang__)
+                __builtin_prefetch(ops[n]);
+#endif
+                n++;
+            }
+            if (n == 0) {
+                return;
+            }
+            for (size_t i = 0; i < n; i++) {
+                Socket::sendComplete(ops[i]);
+            }
         }
     }
 
@@ -127,16 +142,23 @@ namespace {
                 }
                 workerSleeping.store(false, std::memory_order_seq_cst);
             }
-            bool any = false;
+            bool any = false, wake = false;
             while (toWorker->try_dequeue(op)) {
                 Socket::performSend(op);
                 toMain->enqueue(op);
                 any = true;
+                // A clean completion (everything written, no callback) can wait for the loop's
+                // next natural wake; anything else, or a socket that closed / queued more
+                // meanwhile, must not sit until then.
+                std::atomic_thread_fence(std::memory_order_seq_cst);
+                if (op->result < 0 || (size_t) op->result != op->bytes || op->hasCallback || op->needWake.load(std::memory_order_seq_cst)) {
+                    wake = true;
+                }
             }
             if (any) {
                 // Dekker with beforePoll(): either it sees our completion, or we see loopIdle
                 std::atomic_thread_fence(std::memory_order_seq_cst);
-                if (loopIdle.load(std::memory_order_seq_cst)) {
+                if (wake && loopIdle.load(std::memory_order_seq_cst)) {
                     uv_async_send(&mainWake);
                 }
 #ifdef __linux__
@@ -226,7 +248,7 @@ void SendWorker::afterPoll() {
 
 void *SendWorker::allocOp() {
     if (freeOps.empty()) {
-        return new Socket::SendOp;
+        return new Socket::SendOp();
     }
     Socket::SendOp *op = freeOps.back();
     freeOps.pop_back();
@@ -237,6 +259,7 @@ void SendWorker::freeOp(void *op) {
     if (freeOps.size() < 1024) {
         freeOps.push_back((Socket::SendOp *) op);
     } else {
+        delete [] ((Socket::SendOp *) op)->scratch;
         delete (Socket::SendOp *) op;
     }
 }
@@ -246,18 +269,45 @@ void SendWorker::freeOp(void *op) {
 // Deflates a pending message with the given stream and replaces its raw payload with a
 // framed compressed message. Shared between the worker (its own compressor) and the
 // main-thread materialize path (the hub's).
-static void deflateAndFrame(Socket::Queue::Message *m, cWS::zlib::Stream *stream, bool resetAfter, char *buffer, size_t bufferSize, std::string &dynamic) {
+// `op` non-null: the frame goes into the op's scratch arena (worker thread); null: heap frame
+// owned by the message (main-thread materialize). The raw payload is never freed here: it is
+// inline in the message's pool block or kept in rawOwned until the main thread releases it.
+static void deflateAndFrame(Socket::Queue::Message *m, cWS::zlib::Stream *stream, bool resetAfter, char *buffer, size_t bufferSize, std::string &dynamic, Socket::SendOp *op) {
     size_t compressedLength = m->length;
     // resetAfter == independent message (no context takeover): microdeflate; else the socket's window
     char *deflated = resetAfter ? cWS::zlib::deflateIndependent(stream, (char *) m->data, compressedLength, buffer, bufferSize, dynamic)
                                 : cWS::zlib::deflate(stream, (char *) m->data, compressedLength, buffer, bufferSize, dynamic, false);
     const size_t HEADER = cWS::WebSocketProtocol<true, cWS::WebSocket<true>>::LONG_MESSAGE_HEADER;
-    char *frame = new char[compressedLength + HEADER];
+    size_t need = compressedLength + HEADER;
+    char *frame;
+    if (op) {
+        if (op->scratchUsed + need > op->scratchCap) {
+            size_t cap = op->scratchCap ? op->scratchCap * 2 : 64 * 1024;
+            while (cap < op->scratchUsed + need) cap *= 2;
+            char *grown = new char[cap];
+            if (op->scratchUsed) {
+                memcpy(grown, op->scratch, op->scratchUsed);
+                for (Socket::Queue::Message *x = op->head; x; x = x->nextMessage) { // rebase frames already in the arena
+                    if (x->inScratch) x->data = grown + (x->data - op->scratch);
+                }
+            }
+            delete [] op->scratch;
+            op->scratch = grown;
+            op->scratchCap = cap;
+        }
+        frame = op->scratch + op->scratchUsed;
+    } else {
+        frame = new char[need];
+    }
     size_t frameLength = cWS::WebSocketProtocol<true, cWS::WebSocket<true>>::formatMessage(frame, deflated, compressedLength, (cWS::OpCode) m->opCode, compressedLength, true);
-    delete [] (char *) m->data;
+    if (op) {
+        op->scratchUsed += frameLength;
+        m->inScratch = true;
+    } else {
+        m->ownsData = true;
+    }
     m->data = frame;
     m->length = frameLength;
-    m->ownsData = true;
     m->compressPending = false;
 }
 
@@ -270,7 +320,21 @@ namespace {
 }
 
 void Socket::materializeOnMain(Socket *s, Queue::Message *m, cWS::zlib::Stream *stream, bool resetAfter, char *buffer, size_t bufferSize, std::string &dynamic) {
-    deflateAndFrame(m, stream, resetAfter, buffer, bufferSize, dynamic);
+    deflateAndFrame(m, stream, resetAfter, buffer, bufferSize, dynamic, nullptr);
+}
+
+// A partially sent frame that lives in the op's scratch would dangle once the op is reused:
+// move what is left of it to the heap.
+void Socket::unscratch(SendOp *op) {
+    for (Queue::Message *m = op->head; m; m = m->nextMessage) {
+        if (m->inScratch) {
+            char *copy = new char[m->length ? m->length : 1];
+            memcpy(copy, m->data, m->length);
+            m->data = copy;
+            m->ownsData = true;
+            m->inScratch = false;
+        }
+    }
 }
 
 void Socket::prepareSend(SendOp *op) {
@@ -280,14 +344,16 @@ void Socket::prepareSend(SendOp *op) {
     }
     // 1. deflate + frame anything still pending, with this socket's window or the shared one
     cWS::zlib::Stream *stream = op->deflateWindow ? (cWS::zlib::Stream *) op->deflateWindow : workerDeflate;
+    op->scratchUsed = 0;
     for (Queue::Message *m = op->head; m; m = m->nextMessage) {
         if (m->compressPending) {
-            deflateAndFrame(m, stream, !op->deflateWindow, workerBuffer, WORKER_BUFFER, workerDynamic);
+            deflateAndFrame(m, stream, !op->deflateWindow, workerBuffer, WORKER_BUFFER, workerDynamic, op);
         }
     }
     // 2. gather
     op->count = 0;
     op->bytes = 0;
+    op->hasCallback = false;
     for (Queue::Message *m = op->head; m; m = m->nextMessage) {
 #ifdef _WIN32
         op->bufs[op->count].buf = (CHAR *) m->data;
@@ -298,6 +364,9 @@ void Socket::prepareSend(SendOp *op) {
 #endif
         op->bytes += m->length;
         op->count++;
+        if (m->callback) {
+            op->hasCallback = true;
+        }
     }
 }
 
@@ -357,6 +426,7 @@ void Socket::sendComplete(SendOp *op) {
         if (sendWouldBlock(op->error)) {
             res = 0;
         } else {
+            unscratch(op);
             s->requeueFront(op);
             SendWorker::freeOp(op);
             if (s->endCb) {
@@ -389,6 +459,7 @@ void Socket::sendComplete(SendOp *op) {
         op->tail = nullptr;
     }
     bool complete = (size_t) res == opBytes;
+    unscratch(op);
     s->requeueFront(op);
     SendWorker::freeOp(op);
 

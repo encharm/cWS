@@ -747,6 +747,52 @@ describe('CWS send queue under pressure', (): void => {
     expect(again.messages[0].toString()).to.equal('after');
   });
 
+  it('Should deliver messages queued behind an in-flight send when the loop then idles', async (): Promise<void> => {
+    const got: any = await collect((ws: WebSocket): void => {
+      for (let i: number = 0; i < 500; i++) { ws.send(Buffer.alloc(4096, 1)); }   // in flight on the worker after this tick
+      setImmediate((): void => { ws.send('late-1'); setImmediate((): void => ws.send('late-2')); });
+    }, 502, { slowReader: true });
+    expect(got.messages.length).to.equal(502);
+    expect(got.messages[500].toString()).to.equal('late-1');
+    expect(got.messages[501].toString()).to.equal('late-2');
+  });
+
+  it('Should close the fd of a socket terminated with a send in flight, then idle', async (): Promise<void> => {
+    const got: any = await collect((ws: WebSocket): void => {
+      for (let i: number = 0; i < 200; i++) { ws.send(Buffer.alloc(4096, 2)); }
+      setImmediate((): void => ws.terminate());
+    }, 1e9, { waitForClose: true });
+    expect(got.closed).to.equal(true);
+  });
+
+  it('Should deliver a compressed burst, in order, to a slow reader (shared compressor)', async (): Promise<void> => {
+    const count: number = 1500;
+    const got: any = await new Promise((resolve: (v: any) => void, reject: (e: any) => void): void => {
+      const messages: Buffer[] = [];
+      const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { threshold: 16 } }, (): void => {
+        const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: true });
+        client.on('message', (data: Buffer): void => {
+          messages.push(data);
+          client.pause(); setTimeout((): void => client.resume(), 2);
+          if (messages.length === count) { client.close(); wsServer.close((): void => resolve(messages)); }
+        });
+        client.on('error', reject);
+      });
+      wsServer.on('connection', (ws: WebSocket): void => {
+        for (let i: number = 0; i < count; i++) {
+          const buf: Buffer = Buffer.alloc(4096, 65 + (i % 26));
+          buf.writeUInt32LE(i, 0);
+          ws.send(buf);
+        }
+      });
+    });
+    expect(got.length).to.equal(count);
+    for (let i: number = 0; i < count; i++) {
+      expect(got[i].readUInt32LE(0)).to.equal(i);
+      expect(got[i][4095]).to.equal(65 + (i % 26));
+    }
+  });
+
   it('Should interleave callbacks, prepared payloads and plain sends in order', async (): Promise<void> => {
     const prepared: PreparedMessage = new PreparedMessage(Buffer.from('shared-payload'));
     const order: string[] = [];

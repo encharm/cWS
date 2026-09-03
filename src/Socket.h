@@ -5,6 +5,7 @@
 #include "SendWorker.h"
 #include "Zlib.h"
 #include <vector>
+#include <atomic>
 #ifndef _WIN32
 #include <sys/uio.h>
 #endif
@@ -67,6 +68,13 @@ public:
             // may still append frames to while it sits at the queue tail. Never true for a
             // message with a callback or borrowed data.
             bool run = false;
+            // data points into the sending op's scratch arena (a compressed frame built by the
+            // worker); freed with the op, never by release(). A partially sent scratch frame
+            // is copied to the heap by sendComplete before it is requeued.
+            bool inScratch = false;
+            // A heap raw payload (compressPending message too large for a pool block) kept
+            // until release(), so the worker never frees main-thread memory.
+            const char *rawOwned = nullptr;
             unsigned char opCode = 0;
         };
 
@@ -76,6 +84,9 @@ public:
         static void release(NodeData *nodeData, Message *message) {
             if (message->ownsData) {
                 delete [] (char *) message->data;
+            }
+            if (message->rawOwned) {
+                delete [] (char *) message->rawOwned;
             }
             if (message->poolIndex >= 0) {
                 nodeData->freeSmallMemoryBlock((char *) message, message->poolIndex);
@@ -130,8 +141,20 @@ public:
         ssize_t result;
         int error;
         bool closeFd;
+        // Set by the worker while gathering: some message carries a callback (needs main promptly).
+        bool hasCallback;
+        // Set by the main thread while the op is in flight when its completion must be handled
+        // promptly even if the loop is idle: the socket closed (fd to close) or more messages
+        // queued behind the op. Read by the worker after posting the completion (Dekker with
+        // the main thread's hook drains: a set the worker misses is followed by a main-thread
+        // drain before the loop sleeps, because the setter runs on the main thread).
+        std::atomic<bool> needWake;
         void *deflateWindow;   // this socket's sliding window (nullptr: worker's shared compressor)
         void *destroyWindow;   // set when the socket closed mid-flight: completion destroys it
+        // Worker-owned arena for the compressed frames of this op (grows in place, pointers
+        // rebased); reused with the op, freed only when the op itself is deleted.
+        char *scratch;
+        size_t scratchCap, scratchUsed;
 #ifdef _WIN32
         WSABUF bufs[512];
 #else
@@ -142,6 +165,7 @@ public:
     static void performSend(SendOp *op);   // worker thread
     static void sendComplete(SendOp *op);    // main thread
     static void materializeOnMain(Socket *s, Queue::Message *m, cWS::zlib::Stream *stream, bool resetAfter, char *buffer, size_t bufferSize, std::string &dynamic);
+    static void unscratch(SendOp *op);   // main thread: copy partially sent scratch frames to the heap before requeue
 protected:
     SendOp *sendOp = nullptr;
     // Set by setState<STATE>(): STATE::onEnd, so the completion path can end a socket on a hard error.
@@ -325,45 +349,44 @@ protected:
         }
 
         if (events & UV_WRITABLE) {
-            if (!socket->messageQueue.empty() && (events & UV_WRITABLE) && !socket->sendBusy()) {
-                socket->cork(true);
-                while (true) {
-                    Queue::Message *messagePtr = socket->messageQueue.front();
-                    if (messagePtr->compressPending && socket->materializeCb) {
-                        socket->materializeCb(socket, messagePtr);
+            // A socket whose kernel buffer was full became writable again. With the worker on,
+            // hand it the queue: a slow client is a steady state, and its drains must not cost
+            // the JS thread a syscall per message. The completion re-arms UV_WRITABLE if the
+            // write is short again. Without the worker: one gathered write per round, no
+            // cork toggles (they were two setsockopt calls per drain).
+            if (!socket->messageQueue.empty() && !socket->sendBusy()) {
+                if (SendWorker::active() && !socket->ssl) {
+                    socket->change(socket->nodeData->loop, socket, socket->setPoll(UV_READABLE));
+                    if (socket->submitToWorker()) {
+                        return;
                     }
-                    ssize_t sent = ::send(socket->getFd(), messagePtr->data, messagePtr->length, MSG_NOSIGNAL);
-                    if (sent == (ssize_t) messagePtr->length) {
-                        // Pop before the callback: it may close/terminate this socket,
-                        // which frees the queue (use-after-free otherwise).
-                        auto callback = messagePtr->callback;
-                        void *callbackData = messagePtr->callbackData, *reserved = messagePtr->reserved;
-                        socket->messageQueue.pop(socket->nodeData);
-                        if (callback) {
-                            callback(p, callbackData, false, reserved);
-                            if (socket->isClosed()) {
-                                return;
-                            }
-                        }
-                        if (socket->messageQueue.empty()) {
-                            // todo, remove bit, don't set directly
-                            socket->change(socket->nodeData->loop, socket, socket->setPoll(UV_READABLE));
-                            break;
-                        }
-                    } else if (sent == SOCKET_ERROR) {
+                    socket->setPoll(socket->getPoll() | UV_WRITABLE); // worker queue full: drain here
+                    socket->changePoll(socket);
+                }
+                socket->materializePending();
+                std::vector<PendingCallback> callbacks;
+                bool stalled = false;
+                while (!socket->messageQueue.empty() && !stalled) {
+                    ssize_t sent = socket->writeQueueGathered();
+                    if (sent < 0) {
                         if (!netContext->wouldBlock()) {
                             STATE::onEnd((Socket *) p);
                             return;
                         }
-                        break;
+                        stalled = true;
                     } else {
-                        messagePtr->length -= sent;
-                        socket->messageQueue.totalLength -= sent;
-                        messagePtr->data += sent;
-                        break;
+                        stalled = socket->consumeSent(sent, &callbacks);
                     }
                 }
-                socket->cork(false);
+                if (socket->messageQueue.empty()) {
+                    socket->change(socket->nodeData->loop, socket, socket->setPoll(UV_READABLE));
+                }
+                for (PendingCallback &c : callbacks) {
+                    c.callback(p, c.callbackData, false, c.reserved);
+                    if (socket->isClosed()) {
+                        return;
+                    }
+                }
             }
         }
 
@@ -424,6 +447,8 @@ protected:
         slab->ownsData = false;
         slab->compressPending = false;
         slab->run = true;
+        slab->inScratch = false;
+        slab->rawOwned = nullptr;
         slab->opCode = 0;
         enqueue(slab);
         return slab;
@@ -441,6 +466,8 @@ protected:
         messagePtr->ownsData = false;
         messagePtr->compressPending = false;
         messagePtr->run = false;
+        messagePtr->inScratch = false;
+        messagePtr->rawOwned = nullptr;
         messagePtr->opCode = 0;
 
         if (data) {
@@ -457,8 +484,10 @@ protected:
     bool write(Queue::Message *message, bool &wasTransferred) {
         ssize_t sent = 0;
         if (sendBusy()) {
-            // a worker send is in flight: anything written now must follow it
+            // a worker send is in flight: anything written now must follow it, and the
+            // completion must resubmit promptly even if the loop is idle by then
             messageQueue.push(message);
+            sendOp->needWake.store(true, std::memory_order_seq_cst);
             wasTransferred = true;
             return true;
         }
@@ -535,6 +564,8 @@ protected:
                     messagePtr->ownsData = false;
                     messagePtr->compressPending = false;
                     messagePtr->run = false;
+                    messagePtr->inScratch = false;
+                    messagePtr->rawOwned = nullptr;
                     messagePtr->opCode = 0;
                 } else {
                     messagePtr = allocMessage(estimatedLength - sizeof(Queue::Message));
@@ -567,6 +598,8 @@ protected:
                 messagePtr->ownsData = false;
                 messagePtr->compressPending = false;
                 messagePtr->run = false;
+                messagePtr->inScratch = false;
+                messagePtr->rawOwned = nullptr;
                 messagePtr->opCode = 0;
 
                 bool wasTransferred;
@@ -774,6 +807,7 @@ public:
 
         if (!ssl && SendWorker::active()) {
             if (sendBusy()) {
+                sendOp->needWake.store(true, std::memory_order_seq_cst);
                 return; // the completion submits what has queued up meanwhile
             }
             if (getPoll() & UV_WRITABLE) {
@@ -868,6 +902,8 @@ public:
         op->result = 0;
         op->error = 0;
         op->closeFd = false;
+        op->hasCallback = false;
+        op->needWake.store(false, std::memory_order_relaxed);
         op->deflateWindow = workerDeflateWindow;
         op->destroyWindow = nullptr;
         Queue::Message *m = messageQueue.head, *last = nullptr;
@@ -901,20 +937,34 @@ public:
     // because callers may reuse their buffer as soon as send() returns.
     void enqueueCompressPending(const char *payload, size_t length, unsigned char opCode,
                                 void(*callback)(void *socket, void *data, bool cancelled, void *reserved), void *callbackData) {
-        int memoryIndex = nodeData->getMemoryBlockIndex(sizeof(Queue::Message));
-        Queue::Message *messagePtr = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
-        char *raw = new char[length ? length : 1];
-        memcpy(raw, payload, length);
-        messagePtr->data = raw;
+        // The raw payload lives inline in a pool block when it fits (freed by the main thread
+        // with the message), else on the heap, kept in rawOwned until release().
+        size_t inlineSize = sizeof(Queue::Message) + (length ? length : 1);
+        Queue::Message *messagePtr;
+        if (inlineSize <= (size_t) cS::NodeData::preAllocMaxSize) {
+            int memoryIndex = nodeData->getMemoryBlockIndex((int) inlineSize);
+            messagePtr = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
+            messagePtr->data = ((char *) messagePtr) + sizeof(Queue::Message);
+            messagePtr->poolIndex = memoryIndex;
+            messagePtr->rawOwned = nullptr;
+        } else {
+            int memoryIndex = nodeData->getMemoryBlockIndex(sizeof(Queue::Message));
+            messagePtr = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
+            char *raw = new char[length];
+            messagePtr->data = raw;
+            messagePtr->poolIndex = memoryIndex;
+            messagePtr->rawOwned = raw;
+        }
+        memcpy((char *) messagePtr->data, payload, length);
         messagePtr->length = length;
         messagePtr->nextMessage = nullptr;
         messagePtr->callback = callback;
         messagePtr->callbackData = callbackData;
         messagePtr->reserved = nullptr;
-        messagePtr->poolIndex = memoryIndex;
-        messagePtr->ownsData = true;
+        messagePtr->ownsData = false;
         messagePtr->compressPending = true;
         messagePtr->run = false;
+        messagePtr->inScratch = false;
         messagePtr->opCode = opCode;
         enqueue(messagePtr);
         if (!corkPending) {
@@ -948,6 +998,7 @@ public:
             // and let its completion close the fd.
             sendOp->socket = nullptr;
             sendOp->closeFd = true;
+            sendOp->needWake.store(true, std::memory_order_seq_cst);
             if (workerDeflateWindow) {
                 sendOp->destroyWindow = workerDeflateWindow; // the worker may still be using it
                 workerOwnsWindow = true;

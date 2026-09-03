@@ -199,6 +199,8 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
     second->ownsData = false;
     second->compressPending = false;
     second->run = false;
+    second->inScratch = false;
+    second->rawOwned = nullptr;
     second->opCode = 0;
     second->callback = sharedSent;
     second->callbackData = payload;
@@ -334,6 +336,8 @@ void WebSocket<isServer>::sendPrepared(typename WebSocket<isServer>::PreparedMes
     messagePtr->ownsData = false;      // pool blocks are reused: every flag must be set
     messagePtr->compressPending = false;
     messagePtr->run = false;
+    messagePtr->inScratch = false;
+    messagePtr->rawOwned = nullptr;
     messagePtr->opCode = 0;
 
     bool wasTransferred;

@@ -134,8 +134,9 @@ public:
         struct iovec iov[512];
 #endif
     };
+    static void prepareSend(SendOp *op);   // worker thread: compress pending, build iov
     static void performSend(SendOp *op);   // worker thread
-    static void sendComplete(SendOp *op);  // main thread
+    static void sendComplete(SendOp *op);    // main thread
     static void materializeOnMain(Socket *s, Queue::Message *m, cWS::zlib::Stream *stream, bool resetAfter, char *buffer, size_t bufferSize, std::string &dynamic);
 protected:
     SendOp *sendOp = nullptr;
@@ -784,16 +785,20 @@ public:
 
     // Loop hook: flush every socket that corked writes since the last hook.
     static void flushCorked(NodeData *nodeData) {
-        if (!nodeData->corkState || nodeData->corkState->pending.empty()) {
-            return;
+        if (nodeData->corkState && !nodeData->corkState->pending.empty()) {
+            // Swap out the list: callbacks run during uncork() may cork new writes
+            // (picked up by the next hook) or close other sockets (their deletion
+            // is deferred to libuv's close phase, so pointers stay valid here).
+            std::vector<Poll *> &batch = nodeData->corkState->flushing; // kept: no reallocation per tick
+            batch.clear();
+            batch.swap(nodeData->corkState->pending);
+            for (Poll *p : batch) {
+                ((Socket *) p)->uncork();
+            }
+            batch.clear();
         }
-        // Swap out the list: callbacks run during uncork() may cork new writes
-        // (picked up by the next hook) or close other sockets (their deletion
-        // is deferred to libuv's close phase, so pointers stay valid here).
-        std::vector<Poll *> batch;
-        batch.swap(nodeData->corkState->pending);
-        for (Poll *p : batch) {
-            ((Socket *) p)->uncork();
+        if (SendWorker::active()) {
+            SendWorker::flush(); // one wake for every op submitted this hook
         }
     }
 
@@ -802,7 +807,7 @@ public:
         if (sendOp || messageQueue.empty() || isClosed()) {
             return true;
         }
-        SendOp *op = new SendOp();
+        SendOp *op = (SendOp *) SendWorker::allocOp();
         op->socket = this;
         op->nodeData = nodeData;
         op->fd = getFd();
@@ -833,7 +838,7 @@ public:
         }
         if (!SendWorker::submit(op)) {
             requeueFront(op);
-            delete op;
+            SendWorker::freeOp(op);
             return false;
         }
         sendOp = op;

@@ -194,7 +194,7 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
     second->callback = sharedSent;
     second->callbackData = payload;
     second->reserved = callback ? new SharedCallback{(void(*)(void *, void *, bool, void *)) callback, callbackData} : nullptr;
-    payload->references++;
+    payload->references.fetch_add(1, std::memory_order_relaxed);
 
     if (corkActive()) {
         enqueue(first);

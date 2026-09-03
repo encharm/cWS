@@ -3,6 +3,7 @@
 
 #include "WebSocketProtocol.h"
 #include "Socket.h"
+#include <atomic>
 
 namespace cWS {
 
@@ -20,10 +21,10 @@ struct SharedPayload {
     std::string raw;
     std::string deflated;
     bool deflatedReady = false;
-    int references = 1;
+    std::atomic<int> references{1};   // released from the send worker too
 
     static void unref(SharedPayload *payload) {
-        if (!--payload->references) {
+        if (payload->references.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             delete payload;
         }
     }

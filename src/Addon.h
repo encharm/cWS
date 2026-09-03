@@ -90,10 +90,9 @@ void registerCheck(Isolate *isolate) {
   uv_check_init((uv_loop_t *)hub.getLoop(), &check);
   check.data = isolate;
   uv_check_start(&check, [](uv_check_t *check) {
-    Isolate *isolate = (Isolate *)check->data;
-    HandleScope hs(isolate);
-    node::MakeCallback(isolate, isolate->GetCurrentContext()->Global(),
-                       Local<Function>::New(isolate, noop), 0, nullptr, node::async_context{0, 0});
+    // Every handler runs through node::MakeCallback, which drains nextTicks and microtasks
+    // itself; the check hook only has to hand completions back and flush corked writes.
+    cS::SendWorker::afterPoll();
     cS::Socket::flushCorked(hub.getNodeData());
   });
   uv_unref((uv_handle_t *)&check);
@@ -106,6 +105,7 @@ void registerCheck(Isolate *isolate) {
   uv_prepare_init((uv_loop_t *)hub.getLoop(), &corkPrepare);
   uv_prepare_start(&corkPrepare, [](uv_prepare_t *) {
     cS::Socket::flushCorked(hub.getNodeData());
+    cS::SendWorker::beforePoll();
   });
   uv_unref((uv_handle_t *)&corkPrepare);
 }

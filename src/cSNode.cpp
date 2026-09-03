@@ -51,11 +51,7 @@ Node::Node(int recvLength, int prePadding, int postPadding, bool useDefaultLoop)
     nodeData->asyncMutex = &asyncMutex;
     nodeData->corkState = new NodeData::CorkState;
 
-    int indices = NodeData::getMemoryBlockIndex(NodeData::preAllocMaxSize) + 1;
-    nodeData->preAlloc = new char*[indices];
-    for (int i = 0; i < indices; i++) {
-        nodeData->preAlloc[i] = nullptr;
-    }   
+    nodeData->pool = new NodeData::BlockPool;
 
     nodeData->clientContext = SSL_CTX_new(TLS_method());
     SSL_CTX_set_min_proto_version(nodeData->clientContext, TLS1_VERSION);
@@ -75,13 +71,12 @@ Node::~Node() {
     delete [] nodeData->recvBufferMemoryBlock;
     SSL_CTX_free(nodeData->clientContext);
 
-    int indices = NodeData::getMemoryBlockIndex(NodeData::preAllocMaxSize) + 1;
-    for (int i = 0; i < indices; i++) {
-        if (nodeData->preAlloc[i]) {
-            delete [] nodeData->preAlloc[i];
+    for (std::vector<char *> &blocks : nodeData->pool->free) {
+        for (char *block : blocks) {
+            delete [] block;
         }
     }
-    delete [] nodeData->preAlloc;
+    delete nodeData->pool;
     delete nodeData->corkState;
     delete nodeData->netContext;
     delete nodeData;

@@ -206,8 +206,16 @@ struct WIN32_EXPORT NodeData {
     Loop *loop;
     cS::Context *netContext;
     void *user = nullptr;
-    static const int preAllocMaxSize = 1024;
-    char **preAlloc;
+    // Per-size-class block freelists (16-byte classes up to preAllocMaxSize). Shared by
+    // pointer between every NodeData copy; main thread only. A sent message's block comes back
+    // here without its memory being touched, so blocks the send worker read cost the JS thread
+    // nothing on return, and the next send reuses a hot block instead of calling malloc.
+    static const int preAllocMaxSize = 4096;
+    static const size_t poolCap = 1024;   // blocks kept per class; beyond that they are freed
+    struct BlockPool {
+        std::vector<char *> free[(preAllocMaxSize >> 4) + 1];
+    };
+    BlockPool *pool;
     SSL_CTX *clientContext;
 
     Async *async = nullptr;
@@ -226,6 +234,7 @@ struct WIN32_EXPORT NodeData {
     struct CorkState {
         bool enabled = false;
         std::vector<Poll *> pending;
+        std::vector<Poll *> flushing;   // scratch for flushCorked, capacity retained across ticks
     };
     CorkState *corkState = nullptr;
 
@@ -234,18 +243,19 @@ struct WIN32_EXPORT NodeData {
     }
 
     char *getSmallMemoryBlock(int index) {
-        if (preAlloc[index]) {
-            char *memory = preAlloc[index];
-            preAlloc[index] = nullptr;
+        std::vector<char *> &blocks = pool->free[index];
+        if (!blocks.empty()) {
+            char *memory = blocks.back();
+            blocks.pop_back();
             return memory;
-        } else {
-            return new char[index << 4];
         }
+        return new char[index << 4];
     }
 
     void freeSmallMemoryBlock(char *memory, int index) {
-        if (!preAlloc[index]) {
-            preAlloc[index] = memory;
+        std::vector<char *> &blocks = pool->free[index];
+        if (blocks.size() < poolCap) {
+            blocks.push_back(memory);
         } else {
             delete [] memory;
         }

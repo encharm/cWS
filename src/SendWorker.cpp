@@ -1,11 +1,23 @@
 #include "SendWorker.h"
+#include <vector>
 #include "Socket.h"
 #include "Zlib.h"
 #include "cWS.h"
 #include "readerwriterqueue.h"
 #include <thread>
+#include <atomic>
+#include <chrono>
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
+#ifdef __linux__
+#include <sched.h>
+#include <fstream>
+#include <sstream>
+#endif
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <cerrno>
 #include <cctype>
 #include <string>
@@ -15,24 +27,124 @@ namespace cS {
 namespace {
     bool workerActive = false;
     const char *workerStatus = "not initialised";
-    moodycamel::BlockingReaderWriterQueue<Socket::SendOp *> *toWorker = nullptr;
+    moodycamel::ReaderWriterQueue<Socket::SendOp *> *toWorker = nullptr;
     moodycamel::ReaderWriterQueue<Socket::SendOp *> *toMain = nullptr;
+    moodycamel::spsc_sema::LightweightSemaphore *workerSema = nullptr;
     uv_async_t mainWake;
+    bool signalPending = false;                 // main thread: submit() since the last flush()
+    std::vector<Socket::SendOp *> freeOps;      // main thread only
+    std::atomic<bool> loopIdle{false};          // main: set before blocking in poll, cleared after
+    std::atomic<bool> workerSleeping{false};    // worker: set before blocking on the semaphore
+    int spinMicros = 50;
+    std::atomic<int> jsCpu{-1};                 // main: the CPU the JS thread last flushed from
+    bool affinityEnabled = true;
 
-    void onMainWake(uv_async_t *) {
+#ifdef __linux__
+    // Keeps the worker in the JS thread's last-level-cache domain (Linux). Every cache line the
+    // two threads share, the op, the queue slots and every payload the worker reads that the
+    // JS thread then reuses from the freelist, stays in one L3 instead of crossing the fabric.
+    // Measured on an EPYC 9454P: JS-thread time per message roughly halves. The JS thread is not
+    // pinned; when it moves to another domain the worker follows on its next batch.
+    std::vector<int> parseCpuList(const std::string &list) {
+        std::vector<int> cpus; std::stringstream ss(list); std::string part;
+        while (std::getline(ss, part, ',')) {
+            size_t dash = part.find('-');
+            int lo = atoi(part.c_str()), hi = dash == std::string::npos ? lo : atoi(part.c_str() + dash + 1);
+            for (int c = lo; c <= hi && c >= 0; c++) cpus.push_back(c);
+        }
+        return cpus;
+    }
+    std::vector<int> readCpuList(int cpu, const char *file) {
+        std::ifstream in("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + file);
+        std::string line; std::getline(in, line);
+        return parseCpuList(line);
+    }
+    int followedCpu = -1;
+    cpu_set_t allowedAtStart;
+    void followJsThread() {
+        int cpu = jsCpu.load(std::memory_order_relaxed);
+        if (cpu < 0 || cpu == followedCpu) return;
+        followedCpu = cpu;
+        std::vector<int> llc = readCpuList(cpu, "/cache/index3/shared_cpu_list");
+        std::vector<int> siblings = readCpuList(cpu, "/topology/thread_siblings_list");
+        cpu_set_t mask; CPU_ZERO(&mask); int n = 0;
+        for (int c : llc) {
+            bool sibling = false;
+            for (int sib : siblings) if (sib == c) sibling = true;   // not the JS core or its SMT twin
+            if (!sibling && CPU_ISSET(c, &allowedAtStart)) { CPU_SET(c, &mask); n++; }
+        }
+        if (n == 0) for (int c : llc) if (CPU_ISSET(c, &allowedAtStart)) { CPU_SET(c, &mask); n++; }
+        if (n > 0) sched_setaffinity(0, sizeof(mask), &mask);
+    }
+#endif
+
+    void drainCompletions() {
         Socket::SendOp *op;
         while (toMain->try_dequeue(op)) {
             Socket::sendComplete(op);
         }
     }
 
+    void onMainWake(uv_async_t *) {
+        drainCompletions();
+        SendWorker::flush(); // completions may have resubmitted sockets with more queued
+    }
+
+    inline void cpuRelax() {
+#if defined(_MSC_VER) && defined(_M_X64)
+        _mm_pause();
+#elif defined(_MSC_VER) && defined(_M_ARM64)
+        __yield();
+#elif defined(__x86_64__)
+        __builtin_ia32_pause();
+#elif defined(__aarch64__)
+        __asm__ __volatile__("yield");
+#endif
+    }
+
+
     void workerLoop() {
         Socket::SendOp *op;
+#ifdef __linux__
+        CPU_ZERO(&allowedAtStart);
+        sched_getaffinity(0, sizeof(allowedAtStart), &allowedAtStart);
+#endif
         for (;;) {
-            toWorker->wait_dequeue(op);
-            Socket::performSend(op);
-            toMain->enqueue(op);
-            uv_async_send(&mainWake);
+            if (!toWorker->peek() && spinMicros > 0) {
+                // stay hot between ticks: a wake from the JS thread costs it a futex syscall
+                auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(spinMicros);
+                for (int i = 0; !toWorker->peek(); i++) {
+                    cpuRelax();
+                    if ((i & 63) == 63 && std::chrono::steady_clock::now() >= deadline) break;
+                }
+            }
+            if (!toWorker->peek()) {
+                // Dekker with flush(): either it sees workerSleeping and signals, or we see its op
+                workerSleeping.store(true, std::memory_order_seq_cst);
+                std::atomic_thread_fence(std::memory_order_seq_cst);
+                if (!toWorker->peek()) {
+                    workerSema->wait();
+                }
+                workerSleeping.store(false, std::memory_order_seq_cst);
+            }
+            bool any = false;
+            while (toWorker->try_dequeue(op)) {
+                Socket::performSend(op);
+                toMain->enqueue(op);
+                any = true;
+            }
+            if (any) {
+                // Dekker with beforePoll(): either it sees our completion, or we see loopIdle
+                std::atomic_thread_fence(std::memory_order_seq_cst);
+                if (loopIdle.load(std::memory_order_seq_cst)) {
+                    uv_async_send(&mainWake);
+                }
+#ifdef __linux__
+                if (affinityEnabled) {
+                    followJsThread();
+                }
+#endif
+            }
         }
     }
 }
@@ -45,8 +157,17 @@ bool SendWorker::init(uv_loop_t *loop) {
         workerStatus = "disabled by CWS_SEND_THREAD";
         return false;
     }
-    toWorker = new moodycamel::BlockingReaderWriterQueue<Socket::SendOp *>(4096);
-    toMain = new moodycamel::ReaderWriterQueue<Socket::SendOp *>(4096);
+    const char *affinity = getenv("CWS_SEND_THREAD_AFFINITY");
+    if (affinity && *affinity && (*affinity == '0' || *affinity == 'f' || *affinity == 'n' || *affinity == 'o')) {
+        affinityEnabled = false; // "0", "false", "no", "off"
+    }
+    const char *spin = getenv("CWS_SEND_THREAD_SPIN_US");
+    if (spin && *spin) {
+        spinMicros = atoi(spin);
+    }
+    toWorker = new moodycamel::ReaderWriterQueue<Socket::SendOp *>(65536);
+    toMain = new moodycamel::ReaderWriterQueue<Socket::SendOp *>(65536);
+    workerSema = new moodycamel::spsc_sema::LightweightSemaphore();
     uv_async_init(loop, &mainWake, onMainWake);
     uv_unref((uv_handle_t *) &mainWake); // completions alone must not keep the process alive
     std::thread(workerLoop).detach();
@@ -60,7 +181,64 @@ const char *SendWorker::status() { return workerStatus; }
 
 bool SendWorker::submit(void *op) {
     // try_enqueue never allocates; a full queue means "send it yourself this tick".
-    return toWorker->try_enqueue((Socket::SendOp *) op);
+    if (!toWorker->try_enqueue((Socket::SendOp *) op)) {
+        return false;
+    }
+    signalPending = true;
+    return true;
+}
+
+void SendWorker::flush() {
+    if (!signalPending) {
+        return;
+    }
+    signalPending = false;
+#ifdef __linux__
+    if (affinityEnabled) {
+        jsCpu.store(sched_getcpu(), std::memory_order_relaxed); // vDSO, ~20 ns
+    }
+#endif
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (workerSleeping.load(std::memory_order_seq_cst)) {
+        workerSema->signal();
+    }
+}
+
+void SendWorker::beforePoll() {
+    if (!workerActive) {
+        return;
+    }
+    loopIdle.store(true, std::memory_order_seq_cst);
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (toMain->peek()) {
+        drainCompletions();
+        flush();
+    }
+}
+
+void SendWorker::afterPoll() {
+    if (!workerActive) {
+        return;
+    }
+    loopIdle.store(false, std::memory_order_seq_cst);
+    drainCompletions(); // flushCorked() follows and signals any resubmits
+}
+
+void *SendWorker::allocOp() {
+    if (freeOps.empty()) {
+        return new Socket::SendOp;
+    }
+    Socket::SendOp *op = freeOps.back();
+    freeOps.pop_back();
+    return op;
+}
+
+void SendWorker::freeOp(void *op) {
+    if (freeOps.size() < 1024) {
+        freeOps.push_back((Socket::SendOp *) op);
+    } else {
+        delete (Socket::SendOp *) op;
+    }
 }
 
 // ---- Socket side (needs Socket internals) ----
@@ -95,7 +273,7 @@ void Socket::materializeOnMain(Socket *s, Queue::Message *m, cWS::zlib::Stream *
     deflateAndFrame(m, stream, resetAfter, buffer, bufferSize, dynamic);
 }
 
-void Socket::performSend(SendOp *op) {
+void Socket::prepareSend(SendOp *op) {
     if (!workerDeflate) {
         workerDeflate = cWS::zlib::createDeflate(1, 15, 8);
         workerBuffer = new char[WORKER_BUFFER];
@@ -121,6 +299,10 @@ void Socket::performSend(SendOp *op) {
         op->bytes += m->length;
         op->count++;
     }
+}
+
+void Socket::performSend(SendOp *op) {
+    prepareSend(op);
 #ifdef _WIN32
     DWORD sent = 0;
     if (WSASend(op->fd, op->bufs, (DWORD) op->count, &sent, 0, nullptr, nullptr) == SOCKET_ERROR) {
@@ -165,7 +347,7 @@ void Socket::sendComplete(SendOp *op) {
         if (op->destroyWindow) {
             cWS::zlib::destroy((cWS::zlib::Stream *) op->destroyWindow);
         }
-        delete op;
+        SendWorker::freeOp(op);
         return;
     }
     s->sendOp = nullptr;
@@ -176,7 +358,7 @@ void Socket::sendComplete(SendOp *op) {
             res = 0;
         } else {
             s->requeueFront(op);
-            delete op;
+            SendWorker::freeOp(op);
             if (s->endCb) {
                 s->endCb(s);
             }
@@ -208,7 +390,7 @@ void Socket::sendComplete(SendOp *op) {
     }
     bool complete = (size_t) res == opBytes;
     s->requeueFront(op);
-    delete op;
+    SendWorker::freeOp(op);
 
     if (!s->messageQueue.empty()) {
         if (complete) {

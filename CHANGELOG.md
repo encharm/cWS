@@ -1,3 +1,6 @@
+## Released 4.8.2
+* Accept compressed messages that end with a BFINAL=1 DEFLATE block (RFC 7692 section 7.2.3.4). Such clients (libdeflate-based and some non-zlib implementations) were disconnected on their first compressed message.
+
 ## Released 4.8.1
 * Skip the kernel-level cork/uncork (two `setsockopt` calls) around every socket read when write corking is active; those writes leave in the end-of-tick gathered write anyway. Saves 1-2 us of server CPU per read.
 

@@ -8,6 +8,8 @@ import { createServer as createServerHttps, Server as HttpsServer } from 'https'
 import { WebSocket, WebSocketServer, secureProtocol } from '../lib';
 
 import { WebSocket as WSWebSocket } from 'ws';
+import { deflateRawSync } from 'zlib';
+import { randomBytes } from 'crypto';
 
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -467,6 +469,58 @@ describe('CWS permessage-deflate', (): void => {
     wsServer.on('connection', (ws: WebSocket): void => {
       ws.on('message', (message: any): void => {
         ws.send(typeof message === 'string' ? message : Buffer.from(message));
+      });
+    });
+  });
+});
+
+describe('CWS permessage-deflate BFINAL=1 messages', (): void => {
+  const port: number = 3003;
+
+  it('Should accept a compressed message ending with a BFINAL=1 block (RFC 7692 7.2.3.4)', (done: (err?: any) => void): void => {
+    const text: string = 'hello from a client that does not use sync flush, '.repeat(20);
+    const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { threshold: 128 } }, (): void => {
+      const socket: any = connect(port, '127.0.0.1');
+      let buffer: Buffer = Buffer.alloc(0);
+      let handshakeDone: boolean = false;
+      socket.on('connect', (): void => {
+        socket.write(`GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n`);
+      });
+      socket.on('data', (data: Buffer): void => {
+        buffer = Buffer.concat([buffer, data]);
+        if (!handshakeDone) {
+          const end: number = buffer.indexOf('\r\n\r\n');
+          if (end < 0) { return; }
+          handshakeDone = true;
+          buffer = buffer.subarray(end + 4);
+          const payload: Buffer = deflateRawSync(Buffer.from(text)); // ends with BFINAL=1, no trailing empty block
+          const mask: Buffer = randomBytes(4);
+          const masked: Buffer = Buffer.from(payload.map((b: number, i: number) => b ^ mask[i % 4]));
+          const header: Buffer = Buffer.from([0x80 | 0x40 | 0x1, 0x80 | 126, payload.length >> 8, payload.length & 0xff]);
+          socket.write(Buffer.concat([header, mask, masked]));
+        } else if (buffer.length) {
+          try {
+            expect(buffer[0] & 0x0f).to.equal(1); // text echo frame, not a close
+          } catch (e) {
+            return done(e);
+          }
+          socket.destroy();
+          wsServer.close((): void => done());
+        }
+      });
+      socket.on('close', (): void => {
+        if (handshakeDone && !socket.destroyed) { done(new Error('server closed the connection')); }
+      });
+    });
+
+    wsServer.on('connection', (ws: WebSocket): void => {
+      ws.on('message', (message: any): void => {
+        try {
+          expect(message).to.equal(text);
+        } catch (e) {
+          return done(e);
+        }
+        ws.send('ok');
       });
     });
   });

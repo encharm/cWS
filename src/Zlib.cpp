@@ -106,7 +106,10 @@ char *inflate(Stream *stream, char *data, size_t &length, size_t maxPayload, cha
         zs.next_out = (OutPtr) buffer;
         zs.avail_out = (unsigned int) bufferSize;
         err = ZFN(inflate)(&zs, Z_FINISH);
-        if (!zs.avail_in) {
+        // Z_STREAM_END: the sender ended the message with a BFINAL=1 block, which
+        // RFC 7692 section 7.2.3.4 permits (libdeflate and some non-zlib clients do
+        // this); anything left in the input is the 4-byte tail and is ignored.
+        if (!zs.avail_in || err == Z_STREAM_END) {
             break;
         }
 
@@ -115,7 +118,7 @@ char *inflate(Stream *stream, char *data, size_t &length, size_t maxPayload, cha
 
     ZFN(inflateReset)(&zs);
 
-    if ((err != Z_BUF_ERROR && err != Z_OK) || dynamic.length() > maxPayload) {
+    if ((err != Z_BUF_ERROR && err != Z_OK && err != Z_STREAM_END) || dynamic.length() > maxPayload) {
         length = 0;
         return nullptr;
     }

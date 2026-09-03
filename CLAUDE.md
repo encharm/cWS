@@ -21,7 +21,7 @@ Tests bind ports 3000 (ws) and 3001 (wss, certs in `tests/certs/`). The test fil
 
 ### Building the release binaries (multi-ABI)
 
-`binding.gyp` is only used by `npm install` for a local build against the running Node (Node's zlib, no zlib-ng); it must carry the same include path and defines as the Makefile or it fails silently (the install script discards the exit code). Release binaries are built by the `Makefile` (macOS/Linux) and `make.bat` (Windows), which:
+`binding.gyp` is only used by `npm install` for a local build against the running Node (Node's zlib, no zlib-ng), and only when `scripts/install.js` finds no prebuilt binding for the platform/ABI (`CWS_FORCE_BUILD=1` overrides); it must carry the same include path and defines as the Makefile or it fails silently (the install script discards the exit code). Release binaries are built by the `Makefile` (macOS/Linux) and `make.bat` (Windows), which:
 
 1. Download official Node header tarballs for one pinned version per supported major into `targets/` (`VER_115`=Node 20, `VER_127`=Node 22, `VER_137`=Node 24, `VER_147`=Node 26; the number is the Node ABI / `process.versions.modules`).
 2. Compile `src/*.cpp` once per ABI with `g++`/`cl` directly, with `-I src/headers/$V` for the matching Node major.

@@ -1,3 +1,6 @@
+## Released 4.8.4
+* `npm install` no longer rebuilds the binding from source when a prebuilt one matches the platform and Node ABI. Since the node-gyp fallback was repaired in 4.8.0, every install on a machine with a compiler was silently replacing the shipped zlib-ng binding with a Node-zlib build. `CWS_FORCE_BUILD=1` forces the source build.
+
 ## Released 4.8.3
 * Corked sends up to 1 KB use the per-loop block pool instead of malloc/free per message; queued messages remember their pool block. Also initialise the `reserved` callback argument, which was passed uninitialised for messages that hit the write queue.
 * JS: resolve the native namespace once per socket instead of on every `send`/`close`/`ping`.

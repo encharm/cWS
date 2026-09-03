@@ -14,6 +14,7 @@ This table is true if you run ssl directly with `cws` (`Node.js`). In case if yo
 
 | cWS Version | Node 26 | Node 24  | Node 22 | Node 20 |
 |-------------|---------|----------|---------|----------
+| 4.8.4       |    X    |    X     |    X    |   X     |
 | 4.8.3       |    X    |    X     |    X    |   X     |
 | 4.8.2       |    X    |    X     |    X    |   X     |
 | 4.8.1       |    X    |    X     |    X    |   X     |

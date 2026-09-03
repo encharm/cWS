@@ -1,6 +1,6 @@
 {
   "name": "@encharm/cws",
-  "version": "4.8.3",
+  "version": "4.8.4",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "description": "cWS - fast C++ WebSocket implementation for Node.js",
@@ -8,7 +8,7 @@
     "lint": "tslint -c tslint.json 'lib/**/*.ts'",
     "test": "nyc mocha './tests/**/*.test.ts' --exit",
     "clean": "rimraf dist/bindings/*",
-    "install": "node-gyp rebuild > build_log.txt 2>&1 || exit 0",
+    "install": "node scripts/install.js",
     "build-ts": "rimraf dist/*.js && rimraf dist/*.ts && npm run lint && tsc",
     "build-cpp": "node-gyp rebuild > build_log.txt 2>&1 || exit 0"
   },

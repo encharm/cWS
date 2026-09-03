@@ -13,6 +13,7 @@ export declare class WebSocket {
     private external;
     private socketType;
     private compressThreshold;
+    private nativeApi;
     constructor(url: string, options?: any);
     get bufferedAmount(): number;
     get _socket(): SocketAddress;

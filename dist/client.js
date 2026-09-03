@@ -26,8 +26,10 @@ class WebSocket {
             message: shared_1.noop
         };
         this.socketType = 'client';
+        this.nativeApi = shared_1.native.client;
         if (!this.url && this.options.external) {
             this.socketType = 'server';
+            this.nativeApi = shared_1.native.server;
             this.external = this.options.external;
             this.compressThreshold = this.options.compressThreshold;
         }
@@ -90,7 +92,7 @@ class WebSocket {
             else if (this.compressThreshold !== undefined) {
                 compress = messageByteLength(message) >= this.compressThreshold;
             }
-            shared_1.native[this.socketType].send(this.external, message, opCode, cb ? () => process.nextTick(cb) : null, compress);
+            this.nativeApi.send(this.external, message, opCode, cb ? () => process.nextTick(cb) : null, compress);
         }
         else if (cb) {
             cb(new Error('Socket not connected'));
@@ -98,18 +100,18 @@ class WebSocket {
     }
     ping(message) {
         if (this.external) {
-            shared_1.native[this.socketType].send(this.external, message, shared_1.OPCODE_PING);
+            this.nativeApi.send(this.external, message, shared_1.OPCODE_PING);
         }
     }
     close(code = 1000, reason) {
         if (this.external) {
-            shared_1.native[this.socketType].close(this.external, code, reason);
+            this.nativeApi.close(this.external, code, reason);
             this.external = null;
         }
     }
     terminate() {
         if (this.external) {
-            shared_1.native[this.socketType].terminate(this.external);
+            this.nativeApi.terminate(this.external);
             this.external = null;
         }
     }

@@ -289,7 +289,7 @@ void HttpSocket<isServer>::onEnd(cS::Socket *s) {
         if (message->callback) {
             message->callback(nullptr, message->callbackData, true, nullptr);
         }
-        httpSocket->messageQueue.pop();
+        httpSocket->messageQueue.pop(httpSocket->nodeData);
     }
 
     while (httpSocket->outstandingResponsesHead) {

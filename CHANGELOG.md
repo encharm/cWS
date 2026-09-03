@@ -1,3 +1,7 @@
+## Released 4.8.3
+* Corked sends up to 1 KB use the per-loop block pool instead of malloc/free per message; queued messages remember their pool block. Also initialise the `reserved` callback argument, which was passed uninitialised for messages that hit the write queue.
+* JS: resolve the native namespace once per socket instead of on every `send`/`close`/`ping`.
+
 ## Released 4.8.2
 * Accept compressed messages that end with a BFINAL=1 DEFLATE block (RFC 7692 section 7.2.3.4). Such clients (libdeflate-based and some non-zlib implementations) were disconnected on their first compressed message.
 

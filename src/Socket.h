@@ -50,20 +50,32 @@ protected:
             Message *nextMessage = nullptr;
             void (*callback)(void *socket, void *data, bool cancelled, void *reserved) = nullptr;
             void *callbackData = nullptr, *reserved = nullptr;
+            // >= 0: block came from NodeData's small-block pool (index for freeSmallMemoryBlock);
+            // -1: heap (new char[]). Messages are allocated as raw char arrays, so every
+            // allocation site must set this explicitly (the initializers above never run).
+            int poolIndex = -1;
         };
 
         Message *head = nullptr, *tail = nullptr;
         size_t totalLength = 0;
 
-        void pop()
+        static void release(NodeData *nodeData, Message *message) {
+            if (message->poolIndex >= 0) {
+                nodeData->freeSmallMemoryBlock((char *) message, message->poolIndex);
+            } else {
+                delete [] (char *) message;
+            }
+        }
+
+        void pop(NodeData *nodeData)
         {
             Message *nextMessage;
             if ((nextMessage = head->nextMessage)) {
                 totalLength -= head->length;
-                delete [] (char *) head;
+                release(nodeData, head);
                 head = nextMessage;
             } else {
-                delete [] (char *) head;
+                release(nodeData, head);
                 head = tail = nullptr;
                 totalLength = 0;
             }
@@ -174,7 +186,7 @@ protected:
                     // which frees the queue (use-after-free otherwise).
                     auto callback = messagePtr->callback;
                     void *callbackData = messagePtr->callbackData, *reserved = messagePtr->reserved;
-                    socket->messageQueue.pop();
+                    socket->messageQueue.pop(socket->nodeData);
                     if (callback) {
                         callback(p, callbackData, false, reserved);
                         if (socket->isClosed()) {
@@ -256,7 +268,7 @@ protected:
                         // which frees the queue (use-after-free otherwise).
                         auto callback = messagePtr->callback;
                         void *callbackData = messagePtr->callbackData, *reserved = messagePtr->reserved;
-                        socket->messageQueue.pop();
+                        socket->messageQueue.pop(socket->nodeData);
                         if (callback) {
                             callback(p, callbackData, false, reserved);
                             if (socket->isClosed()) {
@@ -318,6 +330,10 @@ protected:
         messagePtr->length = length;
         messagePtr->data = ((char *) messagePtr) + sizeof(Queue::Message);
         messagePtr->nextMessage = nullptr;
+        messagePtr->callback = nullptr;
+        messagePtr->callbackData = nullptr;
+        messagePtr->reserved = nullptr;
+        messagePtr->poolIndex = -1;
 
         if (data) {
             memcpy((char *) messagePtr->data, data, messagePtr->length);
@@ -385,10 +401,21 @@ protected:
         if (corkActive()) {
             // Frame now, write later: everything sent to this socket during the
             // current loop iteration goes out in one gathered write (uncork()).
-            Queue::Message *messagePtr = allocMessage(estimatedLength - sizeof(Queue::Message));
+            // Small messages come from the per-loop block pool (pop() returns them).
+            Queue::Message *messagePtr;
+            if (estimatedLength <= cS::NodeData::preAllocMaxSize) {
+                int memoryIndex = nodeData->getMemoryBlockIndex((int) estimatedLength);
+                messagePtr = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
+                messagePtr->data = ((char *) messagePtr) + sizeof(Queue::Message);
+                messagePtr->poolIndex = memoryIndex;
+            } else {
+                messagePtr = allocMessage(estimatedLength - sizeof(Queue::Message));
+            }
             messagePtr->length = T::transform(message, (char *) messagePtr->data, length, transformData);
+            messagePtr->nextMessage = nullptr;
             messagePtr->callback = callback;
             messagePtr->callbackData = callbackData;
+            messagePtr->reserved = nullptr;
             enqueue(messagePtr);
             if (!corkPending) {
                 corkPending = true;
@@ -405,6 +432,9 @@ protected:
                 Queue::Message *messagePtr = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
                 messagePtr->data = ((char *) messagePtr) + sizeof(Queue::Message);
                 messagePtr->length = T::transform(message, (char *) messagePtr->data, length, transformData);
+                messagePtr->nextMessage = nullptr;
+                messagePtr->reserved = nullptr;
+                messagePtr->poolIndex = memoryIndex;
 
                 bool wasTransferred;
                 if (write(messagePtr, wasTransferred)) {
@@ -589,7 +619,7 @@ public:
                 if (callbacks && m->callback) {
                     callbacks->push_back({m->callback, m->callbackData, m->reserved});
                 }
-                messageQueue.pop();
+                messageQueue.pop(nodeData);
             } else {
                 m->length -= sent;
                 m->data += sent;

@@ -151,6 +151,9 @@ void WebSocket<isServer>::sendPrepared(typename WebSocket<isServer>::PreparedMes
     Queue::Message *messagePtr = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
     messagePtr->data = preparedMessage->buffer;
     messagePtr->length = preparedMessage->length;
+    messagePtr->nextMessage = nullptr;
+    messagePtr->reserved = nullptr;
+    messagePtr->poolIndex = memoryIndex;
 
     bool wasTransferred;
     if (write(messagePtr, wasTransferred)) {
@@ -312,7 +315,7 @@ void WebSocket<isServer>::onEnd(cS::Socket *s) {
         if (message->callback) {
             message->callback(nullptr, message->callbackData, true, nullptr);
         }
-        webSocket->messageQueue.pop();
+        webSocket->messageQueue.pop(webSocket->nodeData);
     }
 
     webSocket->nodeData->clearPendingPollChanges(webSocket);

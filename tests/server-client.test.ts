@@ -525,3 +525,34 @@ describe('CWS permessage-deflate BFINAL=1 messages', (): void => {
     });
   });
 });
+
+describe('CWS permessage-deflate shared mode (independent messages)', (): void => {
+  const port: number = 3004;
+
+  it('Should round-trip text, binary and a large message through the shared compressor', (done: (err?: any) => void): void => {
+    const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { threshold: 32 } }, (): void => {
+      const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: true });
+      const items: any[] = ['tiny', 'x'.repeat(40), JSON.stringify({ users: Array.from({ length: 500 }, (_: any, i: number) => ({ id: i, name: `user-${i}`, online: i % 3 === 0 })) })];
+      const binary: Buffer = Buffer.alloc(300000);
+      for (let i: number = 0; i < binary.length; i++) { binary[i] = (i * 7 + (i >> 8)) & 0xff; }
+      items.push(binary);
+      const received: any[] = [];
+      client.on('open', (): void => { for (const item of items) { client.send(item); } });
+      client.on('message', (data: any, isBinary: boolean): void => {
+        received.push(isBinary ? Buffer.from(data) : data.toString());
+        if (received.length === items.length) {
+          try {
+            for (let i: number = 0; i < 3; i++) { expect(received[i]).to.equal(items[i]); }
+            expect(Buffer.compare(received[3], binary)).to.equal(0);
+          } catch (e) { return done(e); }
+          client.close();
+          wsServer.close((): void => done());
+        }
+      });
+      client.on('error', done);
+    });
+    wsServer.on('connection', (ws: WebSocket): void => {
+      ws.on('message', (message: any): void => { ws.send(typeof message === 'string' ? message : Buffer.from(message)); });
+    });
+  });
+});

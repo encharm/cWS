@@ -14,6 +14,7 @@ This table is true if you run ssl directly with `cws` (`Node.js`). In case if yo
 
 | cWS Version | Node 26 | Node 24  | Node 22 | Node 20 |
 |-------------|---------|----------|---------|----------
+| 4.10.0      |    X    |    X     |    X    |   X     |
 | 4.9.0       |    X    |    X     |    X    |   X     |
 | 4.8.4       |    X    |    X     |    X    |   X     |
 | 4.8.3       |    X    |    X     |    X    |   X     |
@@ -186,6 +187,8 @@ const wsServer = new WebSocket.Server({
    *   sliding window (streaming compression; far better on small messages). windowBits 9..15 and
    *   memLevel 1..9 pick its memory tier: 15/8 = ~256 KB per socket (default), 12/5 = ~32 KB, 10/3 = ~8 KB.
    *   threshold = minimum message size in bytes to compress (default 0); send(..., { compress }) overrides.
+   *   Independent messages (the shared mode) are compressed by the built-in microdeflate encoder, ~1.7x faster
+   *   than zlib-ng level 1 at the same ratio; CWS_MICRO_DEFLATE=0 falls back to zlib-ng.
    *   level 1..9 (default 2): deflate level of the per-socket compressor. The prebuilt bindings use zlib-ng
    *   (see `zlibBackend` export): level 1 is its very fast "quick" strategy (~3-4x less CPU than zlib
    *   level 1 for ~8% worse ratio), level 2 matches zlib level 1's ratio.
@@ -287,7 +290,9 @@ Set `CWS_CORK=0` in the environment to disable it and write every message immedi
 
 The gathered write itself (the kernel's TCP work, which dominates a busy socket server's CPU) runs on a dedicated worker thread, not on the JavaScript thread. The end-of-tick flush hands each socket's frames to the worker through a lock-free queue; the worker performs the send and reports back, and completions, callbacks and `bufferedAmount` are handled on the main thread as before. Per-socket ordering is preserved, `send()` followed by `close()`/`terminate()` in the same tick still delivers, and a socket that closes while its send is in flight keeps its fd open until the send has finished. Measured on a busy 96-thread EPYC: 30-65% less main-thread CPU per message and 1.7-2.2x fan-out throughput, for 10-25% more total CPU on the worker.
 
-Set `CWS_SEND_THREAD=0` to disable it (sends then happen on the main thread at the end of the tick). The `sendThread` export reports `'active'` or the reason it is not. TLS sockets always send on the main thread.
+With permessage-deflate enabled, compression of outgoing messages also runs on the worker: `send()` queues the raw payload and the worker deflates and frames it before writing, so a compressed `send()` costs the JavaScript thread the same as an uncompressed one (measured: 6 µs → 0.7 µs per 2 KB message).
+
+Set `CWS_SEND_THREAD=0` to disable it (sends and compression then happen on the main thread at the end of the tick). The `sendThread` export reports `'active'` or the reason it is not. TLS sockets always send on the main thread.
 
 ### Secure WebSocket
 You can use `wss://` with `cws` by providing `https` server to `cws` and setting `secureProtocol` on https options:

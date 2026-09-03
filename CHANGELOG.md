@@ -1,3 +1,7 @@
+## Released 4.10.0
+* microdeflate: a built-in ~150-line raw-DEFLATE encoder (fixed Huffman, greedy LZ77, no stream state, no per-message hash reset) now compresses independent messages, i.e. the shared-compressor mode. Measured on a real BSON RPC stream: same ratio as zlib-ng level 1 (2.84 vs 2.85) at ~1.7x its speed; a compressed 2 KB message costs 4.6 µs of worker CPU instead of 6.0. Output is standard DEFLATE (round-trip tested against zlib's inflater). `CWS_MICRO_DEFLATE=0` falls back to zlib-ng; `zlibBackend` reports `+ microdeflate` when active. Dedicated windows (context takeover) and inflate stay on zlib-ng.
+* Compression moved to the send worker: `send()` of a compressed message queues the raw payload and the worker deflates + frames it. Main-thread cost of a compressed 2 KB RPC message drops from ~6 µs to ~0.7 µs (Linux, per-thread measurement); wire output is byte-identical. Main-thread write paths (same-tick terminate, full worker queue, drain loop after a short write) deflate pending messages themselves first.
+
 ## Released 4.9.0
 * Send worker thread: the end-of-tick gathered writes run on a dedicated thread (lock-free SPSC hand-off via the vendored `readerwriterqueue`), taking the kernel's TCP work off the JavaScript thread. Measured on a loaded EPYC: 30-65% less main-thread CPU per message, 1.7-2.2x fan-out throughput. `CWS_SEND_THREAD=0` disables; `sendThread` export reports status. A socket closed with a send in flight keeps its fd open until that send completes (prevents fd reuse races).
 

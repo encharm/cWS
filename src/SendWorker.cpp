@@ -1,5 +1,7 @@
 #include "SendWorker.h"
 #include "Socket.h"
+#include "Zlib.h"
+#include "cWS.h"
 #include "readerwriterqueue.h"
 #include <thread>
 #include <cstdlib>
@@ -63,7 +65,62 @@ bool SendWorker::submit(void *op) {
 
 // ---- Socket side (needs Socket internals) ----
 
+// Deflates a pending message with the given stream and replaces its raw payload with a
+// framed compressed message. Shared between the worker (its own compressor) and the
+// main-thread materialize path (the hub's).
+static void deflateAndFrame(Socket::Queue::Message *m, cWS::zlib::Stream *stream, bool resetAfter, char *buffer, size_t bufferSize, std::string &dynamic) {
+    size_t compressedLength = m->length;
+    // resetAfter == independent message (no context takeover): microdeflate; else the socket's window
+    char *deflated = resetAfter ? cWS::zlib::deflateIndependent(stream, (char *) m->data, compressedLength, buffer, bufferSize, dynamic)
+                                : cWS::zlib::deflate(stream, (char *) m->data, compressedLength, buffer, bufferSize, dynamic, false);
+    const size_t HEADER = cWS::WebSocketProtocol<true, cWS::WebSocket<true>>::LONG_MESSAGE_HEADER;
+    char *frame = new char[compressedLength + HEADER];
+    size_t frameLength = cWS::WebSocketProtocol<true, cWS::WebSocket<true>>::formatMessage(frame, deflated, compressedLength, (cWS::OpCode) m->opCode, compressedLength, true);
+    delete [] (char *) m->data;
+    m->data = frame;
+    m->length = frameLength;
+    m->ownsData = true;
+    m->compressPending = false;
+}
+
+namespace {
+    // worker-thread compression state: its own shared compressor and scratch buffers
+    cWS::zlib::Stream *workerDeflate = nullptr;
+    const size_t WORKER_BUFFER = 300 * 1024;
+    char *workerBuffer = nullptr;
+    std::string workerDynamic;
+}
+
+void Socket::materializeOnMain(Socket *s, Queue::Message *m, cWS::zlib::Stream *stream, bool resetAfter, char *buffer, size_t bufferSize, std::string &dynamic) {
+    deflateAndFrame(m, stream, resetAfter, buffer, bufferSize, dynamic);
+}
+
 void Socket::performSend(SendOp *op) {
+    if (!workerDeflate) {
+        workerDeflate = cWS::zlib::createDeflate(1, 15, 8);
+        workerBuffer = new char[WORKER_BUFFER];
+    }
+    // 1. deflate + frame anything still pending, with this socket's window or the shared one
+    cWS::zlib::Stream *stream = op->deflateWindow ? (cWS::zlib::Stream *) op->deflateWindow : workerDeflate;
+    for (Queue::Message *m = op->head; m; m = m->nextMessage) {
+        if (m->compressPending) {
+            deflateAndFrame(m, stream, !op->deflateWindow, workerBuffer, WORKER_BUFFER, workerDynamic);
+        }
+    }
+    // 2. gather
+    op->count = 0;
+    op->bytes = 0;
+    for (Queue::Message *m = op->head; m; m = m->nextMessage) {
+#ifdef _WIN32
+        op->bufs[op->count].buf = (CHAR *) m->data;
+        op->bufs[op->count].len = (ULONG) m->length;
+#else
+        op->iov[op->count].iov_base = (void *) m->data;
+        op->iov[op->count].iov_len = m->length;
+#endif
+        op->bytes += m->length;
+        op->count++;
+    }
 #ifdef _WIN32
     DWORD sent = 0;
     if (WSASend(op->fd, op->bufs, (DWORD) op->count, &sent, 0, nullptr, nullptr) == SOCKET_ERROR) {
@@ -104,6 +161,9 @@ void Socket::sendComplete(SendOp *op) {
         }
         if (op->closeFd) {
             op->nodeData->netContext->closeSocket(op->fd);
+        }
+        if (op->destroyWindow) {
+            cWS::zlib::destroy((cWS::zlib::Stream *) op->destroyWindow);
         }
         delete op;
         return;

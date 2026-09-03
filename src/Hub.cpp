@@ -15,8 +15,10 @@ zlib::Stream *Hub::allocateDefaultCompressor(int level, int windowBits, int memL
 }
 
 char *Hub::deflate(char *data, size_t &length, zlib::Stream *slidingDeflateWindow) {
-    zlib::Stream *compressor = slidingDeflateWindow ? slidingDeflateWindow : deflationStream;
-    return zlib::deflate(compressor, data, length, zlibBuffer, LARGE_BUFFER_SIZE, dynamicZlibBuffer, !slidingDeflateWindow);
+    if (!slidingDeflateWindow) {
+        return zlib::deflateIndependent(deflationStream, data, length, zlibBuffer, LARGE_BUFFER_SIZE, dynamicZlibBuffer);
+    }
+    return zlib::deflate(slidingDeflateWindow, data, length, zlibBuffer, LARGE_BUFFER_SIZE, dynamicZlibBuffer, false);
 }
 
 char *Hub::inflate(char *data, size_t &length, size_t maxPayload) {

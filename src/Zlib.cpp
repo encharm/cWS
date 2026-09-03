@@ -1,4 +1,7 @@
 #include "Zlib.h"
+#include "MicroDeflate.h"
+#include <cstdlib>
+#include <cstring>
 
 #ifdef CWS_ZLIB_NG
 #include "zlib-ng.h"
@@ -133,8 +136,37 @@ char *inflate(Stream *stream, char *data, size_t &length, size_t maxPayload, cha
     return buffer;
 }
 
+bool microDeflateEnabled() {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = getenv("CWS_MICRO_DEFLATE");
+        enabled = !(v && (!strcmp(v, "0") || !strcmp(v, "false") || !strcmp(v, "off") || !strcmp(v, "no")));
+    }
+    return enabled == 1;
+}
+
+char *deflateIndependent(Stream *fallback, char *data, size_t &length, char *buffer, size_t bufferSize, std::string &dynamic) {
+    if (!microDeflateEnabled()) {
+        return deflate(fallback, data, length, buffer, bufferSize, dynamic, true);
+    }
+    static thread_local microdeflate::Encoder *encoder = nullptr;
+    if (!encoder) {
+        encoder = new microdeflate::Encoder();
+    }
+    size_t need = microdeflate::bound(length);
+    uint8_t *out;
+    if (need <= bufferSize) {
+        out = (uint8_t *) buffer;
+    } else {
+        dynamic.resize(need);
+        out = (uint8_t *) &dynamic[0];
+    }
+    length = encoder->compress((const uint8_t *) data, length, out);
+    return (char *) out;
+}
+
 const char *backend() {
-    return CWS_ZLIB_BACKEND;
+    return microDeflateEnabled() ? CWS_ZLIB_BACKEND " + microdeflate" : CWS_ZLIB_BACKEND;
 }
 
 }

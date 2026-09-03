@@ -24,6 +24,7 @@ protected:
     unsigned char controlTipLength = 0, hasOutstandingPong = false;
 
     void *slidingDeflateWindow = nullptr;
+    static void materialize(cS::Socket *s, cS::Socket::Queue::Message *m);
 
     WebSocket(bool perMessageDeflate, cS::Socket *socket);
 

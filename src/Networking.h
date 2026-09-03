@@ -34,8 +34,11 @@
 #define be64toh(x) __builtin_bswap64(x)
 #else
 #define __thread __declspec(thread)
-#define htobe64(x) htonll(x)
-#define be64toh(x) ntohll(x)
+// Windows is little-endian; the intrinsic avoids depending on WinSock's htonll/ntohll,
+// whose declaration depends on SDK version macros that not every translation unit sets.
+#include <stdlib.h>
+#define htobe64(x) _byteswap_uint64(x)
+#define be64toh(x) _byteswap_uint64(x)
 #define pthread_t DWORD
 #define pthread_self GetCurrentThreadId
 #endif

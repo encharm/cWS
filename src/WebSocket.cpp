@@ -14,6 +14,8 @@ WebSocket<isServer>::WebSocket(bool perMessageDeflate, cS::Socket *socket) : cS:
         Group<isServer> *group = Group<isServer>::from(this);
         slidingDeflateWindow = Hub::allocateDefaultCompressor(group->deflateLevel, group->deflateWindowBits, group->deflateMemLevel);
     }
+    workerDeflateWindow = slidingDeflateWindow;
+    materializeCb = WebSocket<isServer>::materialize;
 }
 
 /*
@@ -61,7 +63,23 @@ void WebSocket<isServer>::send(const char *message, size_t length, OpCode opCode
         }
     };
 
+    if (transformData.compress && !ssl && corkActive() && cS::SendWorker::active()) {
+        // deflate + framing happen on the send worker, not on the JS thread
+        enqueueCompressPending(message, length, (unsigned char) opCode, (void(*)(void *, void *, bool, void *)) callback, callbackData);
+        return;
+    }
+
     sendTransformed<WebSocketTransformer>((char *) message, length, (void(*)(void *, void *, bool, void *)) callback, callbackData, transformData);
+}
+
+// Main-thread fallback for a compressPending message that a synchronous write path reached
+// (same-tick terminate, full worker queue, drain loop after a short write).
+template <bool isServer>
+void WebSocket<isServer>::materialize(cS::Socket *s, cS::Socket::Queue::Message *m) {
+    WebSocket<isServer> *webSocket = static_cast<WebSocket<isServer> *>(s);
+    Hub *hub = Group<isServer>::from(webSocket)->hub;
+    zlib::Stream *stream = webSocket->slidingDeflateWindow ? (zlib::Stream *) webSocket->slidingDeflateWindow : hub->deflationStream;
+    cS::Socket::materializeOnMain(s, m, stream, !webSocket->slidingDeflateWindow, hub->zlibBuffer, Hub::LARGE_BUFFER_SIZE, hub->dynamicZlibBuffer);
 }
 
 /*
@@ -320,8 +338,8 @@ void WebSocket<isServer>::onEnd(cS::Socket *s) {
 
     webSocket->nodeData->clearPendingPollChanges(webSocket);
 
-    // remove any per-websocket zlib memory
-    if (webSocket->slidingDeflateWindow) {
+    // remove any per-websocket zlib memory (unless an orphaned send op took it over)
+    if (webSocket->slidingDeflateWindow && !webSocket->workerOwnsWindow) {
         // this relates to Hub::allocateDefaultCompressor
         zlib::destroy((zlib::Stream *) webSocket->slidingDeflateWindow);
         webSocket->slidingDeflateWindow = nullptr;

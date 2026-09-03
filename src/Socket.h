@@ -3,6 +3,7 @@
 
 #include "Networking.h"
 #include "SendWorker.h"
+#include "Zlib.h"
 #include <vector>
 #ifndef _WIN32
 #include <sys/uio.h>
@@ -44,6 +45,7 @@ protected:
     bool corkable = false;
     bool corkPending = false;
 
+public:
     // this is not needed by HttpSocket!
     struct Queue {
         struct Message {
@@ -56,12 +58,21 @@ protected:
             // -1: heap (new char[]). Messages are allocated as raw char arrays, so every
             // allocation site must set this explicitly (the initializers above never run).
             int poolIndex = -1;
+            // data lives in its own new[] buffer (not inside this block); freed with delete[].
+            bool ownsData = false;
+            // data is a raw, unframed payload still to be deflated and framed (by the send
+            // worker, or by materializeCb if a main-thread write path reaches it first).
+            bool compressPending = false;
+            unsigned char opCode = 0;
         };
 
         Message *head = nullptr, *tail = nullptr;
         size_t totalLength = 0;
 
         static void release(NodeData *nodeData, Message *message) {
+            if (message->ownsData) {
+                delete [] (char *) message->data;
+            }
             if (message->poolIndex >= 0) {
                 nodeData->freeSmallMemoryBlock((char *) message, message->poolIndex);
             } else {
@@ -100,7 +111,6 @@ protected:
         }
     } messageQueue;
 
-public:
     // One in-flight worker-thread send per socket (see SendWorker.h). The frames it
     // covers are moved out of messageQueue into the op, so nothing the worker reads
     // can be freed underneath it; the main thread takes them back on completion.
@@ -116,6 +126,8 @@ public:
         ssize_t result;
         int error;
         bool closeFd;
+        void *deflateWindow;   // this socket's sliding window (nullptr: worker's shared compressor)
+        void *destroyWindow;   // set when the socket closed mid-flight: completion destroys it
 #ifdef _WIN32
         WSABUF bufs[512];
 #else
@@ -124,10 +136,25 @@ public:
     };
     static void performSend(SendOp *op);   // worker thread
     static void sendComplete(SendOp *op);  // main thread
+    static void materializeOnMain(Socket *s, Queue::Message *m, cWS::zlib::Stream *stream, bool resetAfter, char *buffer, size_t bufferSize, std::string &dynamic);
 protected:
     SendOp *sendOp = nullptr;
     // Set by setState<STATE>(): STATE::onEnd, so the completion path can end a socket on a hard error.
     void (*endCb)(Socket *) = nullptr;
+    // Per-socket deflate window handed to worker ops (WebSocket sets it); once an op has
+    // been orphaned by close, the op owns the window and the socket must not destroy it.
+    void *workerDeflateWindow = nullptr;
+    bool workerOwnsWindow = false;
+    // Deflates + frames a compressPending message on the main thread (set by WebSocket).
+    void (*materializeCb)(Socket *, Queue::Message *) = nullptr;
+
+    void materializePending() {
+        for (Queue::Message *m = messageQueue.front(); m; m = m->nextMessage) {
+            if (m->compressPending && materializeCb) {
+                materializeCb(this, m);
+            }
+        }
+    }
 
     bool sendBusy() {
         return sendOp != nullptr;
@@ -297,6 +324,9 @@ protected:
                 socket->cork(true);
                 while (true) {
                     Queue::Message *messagePtr = socket->messageQueue.front();
+                    if (messagePtr->compressPending && socket->materializeCb) {
+                        socket->materializeCb(socket, messagePtr);
+                    }
                     ssize_t sent = ::send(socket->getFd(), messagePtr->data, messagePtr->length, MSG_NOSIGNAL);
                     if (sent == (ssize_t) messagePtr->length) {
                         // Pop before the callback: it may close/terminate this socket,
@@ -370,6 +400,9 @@ protected:
         messagePtr->callbackData = nullptr;
         messagePtr->reserved = nullptr;
         messagePtr->poolIndex = -1;
+        messagePtr->ownsData = false;
+        messagePtr->compressPending = false;
+        messagePtr->opCode = 0;
 
         if (data) {
             memcpy((char *) messagePtr->data, data, messagePtr->length);
@@ -450,6 +483,9 @@ protected:
                 messagePtr = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
                 messagePtr->data = ((char *) messagePtr) + sizeof(Queue::Message);
                 messagePtr->poolIndex = memoryIndex;
+                messagePtr->ownsData = false;
+                messagePtr->compressPending = false;
+                messagePtr->opCode = 0;
             } else {
                 messagePtr = allocMessage(estimatedLength - sizeof(Queue::Message));
             }
@@ -477,6 +513,9 @@ protected:
                 messagePtr->nextMessage = nullptr;
                 messagePtr->reserved = nullptr;
                 messagePtr->poolIndex = memoryIndex;
+                messagePtr->ownsData = false;
+                messagePtr->compressPending = false;
+                messagePtr->opCode = 0;
 
                 bool wasTransferred;
                 if (write(messagePtr, wasTransferred)) {
@@ -693,6 +732,7 @@ public:
             }
             // worker queue full: fall through and send synchronously this tick
         }
+        materializePending();
 
         std::vector<PendingCallback> callbacks;
         bool stalled = false;
@@ -733,6 +773,7 @@ public:
         if (isClosed() || sendBusy()) {
             return;
         }
+        materializePending();
         while (!messageQueue.empty()) {
             ssize_t sent = writeQueueGathered();
             if (sent <= 0 || consumeSent(sent, nullptr)) {
@@ -771,15 +812,11 @@ public:
         op->result = 0;
         op->error = 0;
         op->closeFd = false;
+        op->deflateWindow = workerDeflateWindow;
+        op->destroyWindow = nullptr;
         Queue::Message *m = messageQueue.head, *last = nullptr;
         while (m && op->count < 512) {
-#ifdef _WIN32
-            op->bufs[op->count].buf = (CHAR *) m->data;
-            op->bufs[op->count].len = (ULONG) m->length;
-#else
-            op->iov[op->count].iov_base = (void *) m->data;
-            op->iov[op->count].iov_len = m->length;
-#endif
+            // iov entries are filled by the worker once pending messages are compressed
             op->bytes += m->length;
             op->count++;
             last = m;
@@ -801,6 +838,32 @@ public:
         }
         sendOp = op;
         return true;
+    }
+
+    // Queues a raw payload to be deflated and framed on the send worker (WebSocket::send
+    // uses this for compressed messages when the worker is active). The payload is copied
+    // because callers may reuse their buffer as soon as send() returns.
+    void enqueueCompressPending(const char *payload, size_t length, unsigned char opCode,
+                                void(*callback)(void *socket, void *data, bool cancelled, void *reserved), void *callbackData) {
+        int memoryIndex = nodeData->getMemoryBlockIndex(sizeof(Queue::Message));
+        Queue::Message *messagePtr = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
+        char *raw = new char[length ? length : 1];
+        memcpy(raw, payload, length);
+        messagePtr->data = raw;
+        messagePtr->length = length;
+        messagePtr->nextMessage = nullptr;
+        messagePtr->callback = callback;
+        messagePtr->callbackData = callbackData;
+        messagePtr->reserved = nullptr;
+        messagePtr->poolIndex = memoryIndex;
+        messagePtr->ownsData = true;
+        messagePtr->compressPending = true;
+        messagePtr->opCode = opCode;
+        enqueue(messagePtr);
+        if (!corkPending) {
+            corkPending = true;
+            nodeData->corkState->pending.push_back(this);
+        }
     }
 
     // Puts what is left of an op back at the head of the queue, in order.
@@ -828,6 +891,10 @@ public:
             // and let its completion close the fd.
             sendOp->socket = nullptr;
             sendOp->closeFd = true;
+            if (workerDeflateWindow) {
+                sendOp->destroyWindow = workerDeflateWindow; // the worker may still be using it
+                workerOwnsWindow = true;
+            }
             sendOp = nullptr;
         } else {
             netContext->closeSocket(fd);

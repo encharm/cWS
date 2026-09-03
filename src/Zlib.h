@@ -29,6 +29,12 @@ char *deflate(Stream *stream, char *data, size_t &length, char *buffer, size_t b
 // and length 0 on error or when the output would exceed maxPayload. Always resets.
 char *inflate(Stream *stream, char *data, size_t &length, size_t maxPayload, char *buffer, size_t bufferSize, std::string &dynamic);
 
+// Compresses one independent message (no context takeover). Uses the built-in
+// microdeflate encoder unless CWS_MICRO_DEFLATE=0, in which case `fallback` (a
+// shared zlib stream, reset after) is used. Same output contract as deflate().
+char *deflateIndependent(Stream *fallback, char *data, size_t &length, char *buffer, size_t bufferSize, std::string &dynamic);
+bool microDeflateEnabled();
+
 // e.g. "zlib-ng 2.2.4" or "zlib 1.3.1"
 const char *backend();
 

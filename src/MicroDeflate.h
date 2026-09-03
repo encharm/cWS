@@ -43,7 +43,6 @@ class Encoder {
     struct Tables {
         uint16_t litCode[288]; uint8_t litBits[288];
         uint8_t lenCode[259];
-        uint8_t distCode[32769];
         uint8_t distCodeRev[30];
         static uint32_t rev(uint32_t v, int n) { uint32_t r = 0; for (int i = 0; i < n; i++) { r = (r << 1) | (v & 1); v >>= 1; } return r; }
         Tables() {
@@ -56,17 +55,24 @@ class Encoder {
                 litCode[i] = (uint16_t) rev(code, bits); litBits[i] = (uint8_t) bits;
             }
             for (int c = 0; c < 29; c++) for (int l = lenBase()[c]; l < (c < 28 ? lenBase()[c + 1] : 259); l++) lenCode[l] = (uint8_t) c;
-            for (int c = 0; c < 30; c++) { for (int d = distBase()[c]; d < (c < 29 ? distBase()[c + 1] : 32769); d++) distCode[d] = (uint8_t) c; distCodeRev[c] = (uint8_t) rev(c, 5); }
+            for (int c = 0; c < 30; c++) distCodeRev[c] = (uint8_t) rev(c, 5);
         }
     };
     static const Tables &tables() { static const Tables t; return t; }
 
     // 64-bit accumulator flushed 8 bytes at a time with one unaligned store (the output
-    // buffer has slack for the over-write, see bound()). A put may carry up to 32 bits, so
-    // the accumulator is drained whenever more than 32 are pending.
+    // buffer has slack for the over-write, see bound()). Literals (8 or 9 bits) drain the
+    // accumulator conditionally: their flush pattern repeats every few symbols and predicts
+    // well, and an unconditional store per literal made incompressible input store-bound on
+    // Zen 4 (+58%). Match symbols vary in size, so their flush branch mispredicted; they
+    // store unconditionally instead (-7% on the RPC capture on Zen 4, -10% on Apple M).
     struct BitWriter {
         uint8_t *out; size_t pos = 0; uint64_t acc = 0; int n = 0;
         inline void put(uint32_t v, int bits) {
+            acc |= (uint64_t) v << n; n += bits;
+            memcpy(out + pos, &acc, 8); pos += n >> 3; acc >>= n & ~7; n &= 7;
+        }
+        inline void putLit(uint32_t v, int bits) {
             acc |= (uint64_t) v << n; n += bits;
             if (n >= 32) { memcpy(out + pos, &acc, 8); pos += n >> 3; acc >>= n & ~7; n &= 7; }
         }
@@ -78,6 +84,18 @@ class Encoder {
     static inline uint32_t hash32(const uint8_t *p) { return load32(p) * 2654435761u; }
     static inline uint32_t slot(uint32_t h) { return h >> (32 - HASH_BITS); }
     static inline uint8_t tag(uint32_t h) { return (uint8_t) (h >> (32 - HASH_BITS - 8)); }
+    // Distance code from the highest set bit of dist-1: codes 0-3 are exact, then two codes
+    // per power of two, the lower one chosen by the bit below the msb. Replaces a 32 KB table.
+    static inline int distCode(uint32_t dist) {
+        uint32_t d = dist - 1;
+        if (d < 4) return (int) d;
+#ifdef _MSC_VER
+        unsigned long msb; _BitScanReverse(&msb, d);
+#else
+        int msb = 31 - __builtin_clz(d);
+#endif
+        return ((int) msb << 1) | (int) ((d >> (msb - 1)) & 1);
+    }
     static inline int ctz64(uint64_t v) {
 #ifdef _MSC_VER
         unsigned long r; _BitScanForward64(&r, v); return (int) r;
@@ -139,18 +157,18 @@ public:
                 int lc = t.lenCode[m];
                 // length code + its extra bits in one put (at most 8 + 5 bits), same for distance (5 + 13)
                 w.put(t.litCode[257 + lc] | ((uint32_t) (m - lenBase()[lc]) << t.litBits[257 + lc]), t.litBits[257 + lc] + lenExtra()[lc]);
-                int dc = t.distCode[dist];
+                int dc = distCode(dist);
                 w.put(t.distCodeRev[dc] | ((dist - distBase()[dc]) << 5), 5 + distExtra()[dc]);
                 if (i + 1 < limit) { uint32_t h1 = hash32(in + i + 1); table[slot(h1)] = (uint32_t) (i + 1); tags[slot(h1)] = tag(h1); }
                 i += m;
             } else {
-                w.put(t.litCode[in[i]], t.litBits[in[i]]);
+                w.putLit(t.litCode[in[i]], t.litBits[in[i]]);
                 i++;
             }
         }
-        for (; i < length; i++) w.put(t.litCode[in[i]], t.litBits[in[i]]);
-        w.put(t.litCode[256], t.litBits[256]);             // end of block
-        w.put(0, 1); w.put(0, 2); w.flushByte();           // empty stored block: BFINAL=0, BTYPE=00, then byte-align
+        for (; i < length; i++) w.putLit(t.litCode[in[i]], t.litBits[in[i]]);
+        w.putLit(t.litCode[256], t.litBits[256]);          // end of block
+        w.putLit(0, 1); w.putLit(0, 2); w.flushByte();     // empty stored block: BFINAL=0, BTYPE=00, then byte-align
         if (w.pos > length + 5 * (length / 65535 + 1) + 1) {
             return storeBlocks(in, length, out); // incompressible: stored blocks are smaller
         }

@@ -1,3 +1,6 @@
+## Released 4.11.2
+* microdeflate, output unchanged: match symbols write the bit accumulator unconditionally (their sizes vary, so the flush branch mispredicted), literals keep the predictable conditional flush; the 32 KB distance-code table is replaced by a computed code. Profiled with hardware counters on the production EPYC 9454P: 1.84 -> 1.72 µs/KB on the RPC capture (1.58 -> 1.48 on 24 KB messages), 1.13 -> 1.00 on Apple M; incompressible input unchanged. Tried and rejected with measurements: a packed 32 KB hash table (gcc emits partial-register masks on Zen), a single-branch candidate check (an unconditional random load costs more than the mispredicts it saves), `__restrict`, and smaller or larger tables.
+
 ## Released 4.11.1
 * microdeflate speed-ups, output unchanged: matches extend 8 bytes per step, the bit writer stores 8 bytes at a time, length/distance codes go out with their extra bits in one write, and each hash slot carries an 8-bit tag so a stale candidate is rejected without touching the input. Measured on the RPC capture: 1.74 -> 1.20 µs/KB (1.45x), byte-identical output. Incompressible input (random bytes) now falls back to stored blocks: 3x faster and 0.999 instead of 0.948 ratio.
 

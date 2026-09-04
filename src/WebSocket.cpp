@@ -162,7 +162,13 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
     // Header + prefix: into the tail slab when corked (no allocation, one iovec with the
     // frames before it), else its own heap message.
     bool corked = corkActive();
-    Queue::Message *first = corked ? slabWithSpace(MAX_HEADER + prefixPart) : allocMessage(MAX_HEADER + prefixPart);
+    // A small body (every compressed blob is one) is copied into the slab after the header:
+    // no message node, no second iovec, no reference-count traffic; the send is a plain slab
+    // append. Large bodies are borrowed. Sends with a callback keep the borrowed path so the
+    // callback fires on the message's completion as before.
+    const size_t INLINE_BODY_MAX = 4096;
+    bool inlineBody = corked && !callback && bodyLength <= INLINE_BODY_MAX;
+    Queue::Message *first = corked ? slabWithSpace(MAX_HEADER + prefixPart + (inlineBody ? bodyLength : 0)) : allocMessage(MAX_HEADER + prefixPart);
     char *dst = (char *) first->data + (corked ? first->length : 0);
     char *p = dst + WebSocketProtocol<isServer, WebSocket<isServer>>::formatMessage(dst, dst, 0, opCode, prefixPart + bodyLength, deflate);
     if (deflate) {
@@ -183,11 +189,22 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
         memcpy(p, prefix, prefixLength);
         p += prefixLength;
     }
+    if (inlineBody) {
+        memcpy(p, body, bodyLength);
+        p += bodyLength;
+    }
     if (corked) {
         first->length += (size_t) (p - dst);
         messageQueue.totalLength += (size_t) (p - dst);
     } else {
         first->length = (size_t) (p - dst);
+    }
+    if (inlineBody) {
+        if (!corkPending) {
+            corkPending = true;
+            nodeData->corkState->pending.push_back(this);
+        }
+        return;
     }
 
     int memoryIndex = nodeData->getMemoryBlockIndex(sizeof(Queue::Message));

@@ -205,7 +205,7 @@ public:
     // the probe key (tag | i) minus the entry is exactly i - pos - 1 and the range test needs
     // no adjustment.
     template <int BITS>
-    static void encodeSpan(uint32_t *table, const uint8_t *in, size_t start, size_t length, BitWriter &w) {
+    static void encodeSpan(uint32_t *table, const uint8_t *in, size_t start, size_t length, BitWriter &w, uint32_t maxDist = 32768u) {
         const Tables &t = tables();
         const size_t limit = length >= 4 ? length - 4 : 0;
         size_t p = start + 1; const size_t plimit = limit + 1;
@@ -220,7 +220,7 @@ public:
                         d = (tb + (uint32_t) p - 1u) - table[s];
                         table[s] = tb | (uint32_t) p;
                         cand = (uint32_t) p - 2u - d;
-                        if (d < 32768u && load32(in + cand) == load32(in + p - 1)) break;
+                        if (d < maxDist && load32(in + cand) == load32(in + p - 1)) break;
                         w.putLit(t.litCode[in[p - 1]], t.litBits[in[p - 1]]); ++p;
                     }
                     break;
@@ -230,7 +230,7 @@ public:
                     d = (tb + (uint32_t) p - 1u) - table[s];
                     table[s] = tb | (uint32_t) p;
                     cand = (uint32_t) p - 2u - d;
-                    if (CWS_MD_UNLIKELY(d < 32768u)) { if (load32(in + cand) == load32(in + p - 1)) break; }
+                    if (CWS_MD_UNLIKELY(d < maxDist)) { if (load32(in + cand) == load32(in + p - 1)) break; }
                 }
                 w.putRaw(t.litCode[in[p - 1]], t.litBits[in[p - 1]]);
                 {
@@ -238,7 +238,7 @@ public:
                     d = (tb + (uint32_t) p) - table[s];
                     table[s] = tb | (uint32_t) (p + 1);
                     cand = (uint32_t) p - 1u - d;
-                    if (CWS_MD_UNLIKELY(d < 32768u)) { if (load32(in + cand) == load32(in + p)) { ++p; break; } }
+                    if (CWS_MD_UNLIKELY(d < maxDist)) { if (load32(in + cand) == load32(in + p)) { ++p; break; } }
                 }
                 w.putRaw(t.litCode[in[p]], t.litBits[in[p]]);
                 w.drain32();
@@ -304,16 +304,20 @@ public:
 // takeover; a 4 KB history would give only 3.04x, so the history is not configurable below 32 KB.
 class Window {
     static const int TABLE_BITS = 12;
-    static const size_t HISTORY = 32768, MARGIN = 16384, BUF = HISTORY + MARGIN;
+    static const size_t MAX_HISTORY = 32768, MARGIN = 16384, BUF = MAX_HISTORY + MARGIN;
     uint32_t table[1 << TABLE_BITS];
     uint8_t buf[BUF];
     size_t end = 0;          // bytes in buf; the next message is appended here
+    // The negotiated window (1 << windowBits, at most 32 KB): both how much history is kept
+    // and the farthest distance a match may reach, since that is all the client's inflater
+    // holds when a smaller server_max_window_bits was advertised.
+    size_t history;
 
     void clear() { for (size_t k = 0; k < (size_t) 1 << TABLE_BITS; k++) table[k] = Encoder::EMPTY; end = 0; }
 
     // Keep the last HISTORY bytes, drop older table entries, shift the rest.
     void slide() {
-        size_t keep = end < HISTORY ? end : HISTORY, shift = end - keep;
+        size_t keep = end < history ? end : history, shift = end - keep;
         if (shift == 0) return;
         memmove(buf, buf + shift, keep);
         for (size_t k = 0; k < (size_t) 1 << TABLE_BITS; k++) {
@@ -333,7 +337,7 @@ class Window {
     }
 
 public:
-    Window() { clear(); Encoder::tables(); }
+    explicit Window(int windowBits = 15) : history((size_t) 1 << (windowBits < 8 ? 8 : windowBits > 15 ? 15 : windowBits)) { clear(); Encoder::tables(); }
     void reset() { clear(); }
 
     // Adds bytes that went out on this connection without being compressed here (an
@@ -366,7 +370,7 @@ public:
             memcpy(buf + end, in + done, n);
             size_t start = end; end += n;
             hashTail(start);
-            Encoder::encodeSpan<TABLE_BITS>(table, buf, start, end, w);
+            Encoder::encodeSpan<TABLE_BITS>(table, buf, start, end, w, (uint32_t) history);
             done += n;
         }
         // A stored fallback still puts every byte of the message on the wire, so the

@@ -830,6 +830,25 @@ describe('CWS send queue under pressure', (): void => {
     }
   });
 
+  it('Should echo a compressed binary message unchanged (shared and takeover, main-thread and worker paths)', async (): Promise<void> => {
+    // The inflated bytes live in the hub's scratch buffer and the echo is compressed from there;
+    // the deflater must not write its output over its own input.
+    for (const pmd of [{ threshold: 16 }, { serverNoContextTakeover: false, threshold: 16, level: 1 }, { serverNoContextTakeover: false, threshold: 16, level: 2 }]) {
+      const payload: Buffer = Buffer.alloc(20000);
+      for (let i: number = 0; i < payload.length; i++) { payload[i] = i % 251; }
+      const got: Buffer = await new Promise((resolve: (v: Buffer) => void, reject: (e: any) => void): void => {
+        const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: pmd }, (): void => {
+          const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: true });
+          client.on('open', (): void => client.send(payload));
+          client.on('message', (data: Buffer): void => { client.close(); wsServer.close((): void => resolve(Buffer.from(data))); });
+          client.on('error', reject);
+        });
+        wsServer.on('connection', (ws: WebSocket): void => ws.on('message', (m: ArrayBuffer): void => ws.send(Buffer.from(m))));
+      });
+      expect(got.equals(payload)).to.equal(true, JSON.stringify(pmd));
+    }
+  });
+
   it('Should interleave callbacks, prepared payloads and plain sends in order', async (): Promise<void> => {
     const prepared: PreparedMessage = new PreparedMessage(Buffer.from('shared-payload'));
     const order: string[] = [];

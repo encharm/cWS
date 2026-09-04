@@ -35,7 +35,7 @@ Stream *createDeflate(int level, int windowBits, int memLevel) {
     Stream *stream = new Stream();
     stream->isDeflate = true;
     if (level <= 1 && microDeflateEnabled()) {
-        stream->window = new microdeflate::Window();
+        stream->window = new microdeflate::Window(windowBits);
         return stream;
     }
     ZFN(deflateInit2)(&stream->zs, level, Z_DEFLATED, -windowBits, memLevel, Z_DEFAULT_STRATEGY);
@@ -73,7 +73,20 @@ void destroy(Stream *stream) {
     delete stream;
 }
 
+// The input may live inside the output scratch buffer: a message inflated into the hub's
+// buffer and echoed from the JS handler is compressed on the main thread from exactly there.
+// Compressing in place would clobber it, so such input is copied first (only that case pays).
+static const char *unalias(const char *data, size_t length, const char *buffer, size_t bufferSize, std::string &copy) {
+    if (data < buffer + bufferSize && data + length > buffer) {
+        copy.assign(data, length);
+        return copy.data();
+    }
+    return data;
+}
+
 char *deflate(Stream *stream, char *data, size_t &length, char *buffer, size_t bufferSize, std::string &dynamic, bool resetAfter) {
+    std::string aliased;
+    data = (char *) unalias(data, length, buffer, bufferSize, aliased);
     if (stream->window) {
         size_t need = microdeflate::bound(length);
         uint8_t *out;
@@ -184,6 +197,8 @@ bool microDeflateEnabled() {
 }
 
 char *deflateIndependent(Stream *fallback, char *data, size_t &length, char *buffer, size_t bufferSize, std::string &dynamic) {
+    std::string aliased;
+    data = (char *) unalias(data, length, buffer, bufferSize, aliased);
     if (!microDeflateEnabled()) {
         return deflate(fallback, data, length, buffer, bufferSize, dynamic, true);
     }

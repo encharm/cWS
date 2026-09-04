@@ -14,7 +14,7 @@ class WebSocketServer {
         let nativeOptions = 0;
         let windowBits = 15;
         let memLevel = 8;
-        let level = 2;
+        let level = 1;
         if (this.options.perMessageDeflate) {
             nativeOptions |= shared_1.PERMESSAGE_DEFLATE;
             const deflate = typeof this.options.perMessageDeflate === 'object' ? this.options.perMessageDeflate : {};

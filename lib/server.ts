@@ -26,7 +26,7 @@ export class WebSocketServer {
     let nativeOptions: number = 0;
     let windowBits: number = 15;
     let memLevel: number = 8;
-    let level: number = 2;
+    let level: number = 1;   // 1: microdeflate (also the takeover window); 2+: zlib-ng
     if (this.options.perMessageDeflate) {
       // tslint:disable-next-line
       nativeOptions |= PERMESSAGE_DEFLATE;

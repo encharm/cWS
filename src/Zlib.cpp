@@ -125,6 +125,16 @@ char *deflate(Stream *stream, char *data, size_t &length, char *buffer, size_t b
     return buffer;
 }
 
+bool supportsHistoryAppend(Stream *stream) {
+    return stream && stream->window;
+}
+
+void appendHistory(Stream *stream, const char *data, size_t length) {
+    if (stream && stream->window) {
+        stream->window->append((const uint8_t *) data, length);
+    }
+}
+
 char *inflate(Stream *stream, char *data, size_t &length, size_t maxPayload, char *buffer, size_t bufferSize, std::string &dynamic) {
     ZStream &zs = stream->zs;
     dynamic.clear();

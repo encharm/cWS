@@ -336,6 +336,22 @@ public:
     Window() { clear(); Encoder::tables(); }
     void reset() { clear(); }
 
+    // Adds bytes that went out on this connection without being compressed here (an
+    // independently compressed prepared message, spliced in as-is) so the history stays in
+    // step with the client's inflater. Not indexed: later messages will not reference them,
+    // which is the right trade for fan-out payloads (the next push is itself independent).
+    void append(const uint8_t *in, size_t length) {
+        size_t done = 0;
+        while (done < length) {
+            if (end + (length - done) > BUF) {
+                slide();
+            }
+            size_t n = length - done; if (n > BUF - end) n = BUF - end;
+            memcpy(buf + end, in + done, n);
+            end += n; done += n;
+        }
+    }
+
     // `out` must have room for bound(length) bytes. Returns the compressed length (without
     // the 4-byte sync-flush tail). The message becomes part of the history.
     size_t compress(const uint8_t *in, size_t length, uint8_t *out) {

@@ -800,7 +800,14 @@ describe('CWS send queue under pressure', (): void => {
     for (let i: number = 0; i < 400; i++) { small.push(Buffer.from(JSON.stringify({ shortId: `jam${i % 40}`, connectedUsers: i % 17, thumbTimestamp: 1725300000000 + i, team: '66d5a1b2c3d4e5f6a7b8c9d0', shareType: i % 2 }))); }
     const big: Buffer = Buffer.alloc(300 * 1024);
     for (let i: number = 0; i < big.length; i++) { big[i] = (i * 7 + (i >> 9)) & 0xff; }
-    const expected: Buffer[] = [...small, big, ...small.slice(0, 50)];
+    // Prepared messages on a takeover connection go out independently compressed (cached once)
+    // with a history-sync entry behind them; the window-compressed messages around them must
+    // still decode, so interleave both, and reuse the prepared payload with different prefixes.
+    const sharedPayload: Buffer = Buffer.from(JSON.stringify({ jams: Array.from({ length: 30 }, (_: unknown, i: number) => ({ shortId: `jam${i}`, connectedUsers: i * 3, team: 'team-a' })) }));
+    const prepared: PreparedMessage = new PreparedMessage(sharedPayload);
+    const mixed: { prefix?: Buffer, plain?: Buffer }[] = [];
+    for (let i: number = 0; i < 60; i++) { mixed.push(i % 3 === 0 ? { prefix: Buffer.from(`p${i}:`) } : { plain: small[i] }); }
+    const expected: Buffer[] = [...small, big, ...small.slice(0, 50), ...mixed.map((m: any) => m.prefix ? Buffer.concat([m.prefix, sharedPayload]) : m.plain)];
     const got: any = await new Promise((resolve: (v: any) => void, reject: (e: any) => void): void => {
       const messages: Buffer[] = [];
       const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { serverNoContextTakeover: false, level: 1, threshold: 0 } }, (): void => {
@@ -812,7 +819,10 @@ describe('CWS send queue under pressure', (): void => {
         });
         client.on('error', reject);
       });
-      wsServer.on('connection', (ws: WebSocket): void => { for (const m of expected) { ws.send(m); } });
+      wsServer.on('connection', (ws: WebSocket): void => {
+        for (const m of [...small, big, ...small.slice(0, 50)]) { ws.send(m); }
+        for (const m of mixed) { if (m.prefix) { ws.send(prepared, { prefix: m.prefix }); } else { ws.send(m.plain as Buffer); } }
+      });
     });
     expect(got.length).to.equal(expected.length);
     for (let i: number = 0; i < expected.length; i++) {

@@ -346,7 +346,13 @@ void Socket::prepareSend(SendOp *op) {
     cWS::zlib::Stream *stream = op->deflateWindow ? (cWS::zlib::Stream *) op->deflateWindow : workerDeflate;
     op->scratchUsed = 0;
     for (Queue::Message *m = op->head; m; m = m->nextMessage) {
-        if (m->compressPending) {
+        if (m->windowSync) {
+            // an independently compressed message went out here: keep the history in step
+            cWS::zlib::appendHistory((cWS::zlib::Stream *) op->deflateWindow, m->data, m->length);
+            cWS::zlib::appendHistory((cWS::zlib::Stream *) op->deflateWindow, m->syncBody, m->syncBodyLength);
+            m->length = 0;
+            m->windowSync = false;
+        } else if (m->compressPending) {
             deflateAndFrame(m, stream, !op->deflateWindow, workerBuffer, WORKER_BUFFER, workerDynamic, op);
         }
     }
@@ -438,7 +444,7 @@ void Socket::sendComplete(SendOp *op) {
 
     std::vector<PendingCallback> callbacks;
     size_t sent = (size_t) res, opBytes = op->bytes;
-    while (sent > 0 && op->head) {
+    while (op->head && (sent > 0 || op->head->length == 0)) {
         Queue::Message *m = op->head;
         if (sent >= m->length) {
             sent -= m->length;

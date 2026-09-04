@@ -25,6 +25,12 @@ void destroy(Stream *stream);
 // (RFC 7692). With `resetAfter` the stream forgets the message (no context takeover).
 char *deflate(Stream *stream, char *data, size_t &length, char *buffer, size_t bufferSize, std::string &dynamic, bool resetAfter);
 
+// True for a takeover stream whose history can be extended with raw bytes (the microdeflate
+// window); false for zlib streams. appendHistory adds bytes the client will inflate that this
+// stream did not compress (an independently compressed message sent on the connection).
+bool supportsHistoryAppend(Stream *stream);
+void appendHistory(Stream *stream, const char *data, size_t length);
+
 // Inflates one message (the 4-byte tail must already be appended). Returns nullptr
 // and length 0 on error or when the output would exceed maxPayload. Always resets.
 char *inflate(Stream *stream, char *data, size_t &length, size_t maxPayload, char *buffer, size_t bufferSize, std::string &dynamic);

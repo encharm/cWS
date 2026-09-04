@@ -77,6 +77,13 @@ void WebSocket<isServer>::send(const char *message, size_t length, OpCode opCode
 template <bool isServer>
 void WebSocket<isServer>::materialize(cS::Socket *s, cS::Socket::Queue::Message *m) {
     WebSocket<isServer> *webSocket = static_cast<WebSocket<isServer> *>(s);
+    if (m->windowSync) {
+        zlib::appendHistory((zlib::Stream *) webSocket->slidingDeflateWindow, m->data, m->length);
+        zlib::appendHistory((zlib::Stream *) webSocket->slidingDeflateWindow, m->syncBody, m->syncBodyLength);
+        m->length = 0;
+        m->windowSync = false;
+        return;
+    }
     Hub *hub = Group<isServer>::from(webSocket)->hub;
     zlib::Stream *stream = webSocket->slidingDeflateWindow ? (zlib::Stream *) webSocket->slidingDeflateWindow : hub->deflationStream;
     cS::Socket::materializeOnMain(s, m, stream, !webSocket->slidingDeflateWindow, hub->zlibBuffer, Hub::LARGE_BUFFER_SIZE, hub->dynamicZlibBuffer);
@@ -123,7 +130,11 @@ template <bool isServer>
 void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, SharedPayload *payload, OpCode opCode, bool compress,
                                      void(*callback)(WebSocket<isServer> *webSocket, void *data, bool cancelled, void *reserved), void *callbackData) {
     bool deflate = compress && compressionStatus == WebSocket<isServer>::CompressionStatus::ENABLED && opCode < 3;
-    if (!isServer || (deflate && slidingDeflateWindow) || payload->raw.empty()) {
+    // A takeover connection can still take the independently compressed blob: the client's
+    // inflater accepts it, and our history is brought in step with a sync entry queued right
+    // after it (microdeflate window only; zlib streams take the regular per-socket path).
+    bool historySync = deflate && slidingDeflateWindow && corkActive() && !callback && zlib::supportsHistoryAppend((zlib::Stream *) slidingDeflateWindow);
+    if (!isServer || (deflate && slidingDeflateWindow && !historySync) || payload->raw.empty()) {
         std::string whole;
         whole.reserve(prefixLength + payload->raw.size());
         whole.append(prefix, prefixLength).append(payload->raw);
@@ -199,6 +210,35 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
     } else {
         first->length = (size_t) (p - dst);
     }
+    if (historySync && !cS::SendWorker::active()) {
+        // Without the worker, compressed messages are deflated at send() time, so the history
+        // must be extended now, in wire order; no op can be in flight on this window.
+        zlib::appendHistory((zlib::Stream *) slidingDeflateWindow, prefix, prefixLength);
+        zlib::appendHistory((zlib::Stream *) slidingDeflateWindow, payload->raw.data(), payload->raw.size());
+    } else if (historySync) {
+        // prefix copy + payload reference, appended to the window in queue order by the worker
+        int syncIndex = nodeData->getMemoryBlockIndex((int) (sizeof(Queue::Message) + prefixLength + 1));
+        Queue::Message *sync = (Queue::Message *) nodeData->getSmallMemoryBlock(syncIndex);
+        sync->data = ((char *) sync) + sizeof(Queue::Message);
+        memcpy((char *) sync->data, prefix, prefixLength);
+        sync->length = prefixLength;
+        sync->nextMessage = nullptr;
+        sync->poolIndex = syncIndex;
+        sync->ownsData = false;
+        sync->compressPending = false;
+        sync->run = false;
+        sync->inScratch = false;
+        sync->rawOwned = nullptr;
+        sync->windowSync = true;
+        sync->syncBody = payload->raw.data();
+        sync->syncBodyLength = payload->raw.size();
+        sync->opCode = 0;
+        sync->callback = sharedSent;          // drops the payload reference on completion
+        sync->callbackData = payload;
+        sync->reserved = nullptr;
+        payload->references.fetch_add(1, std::memory_order_relaxed);
+        enqueue(sync);
+    }
     if (inlineBody) {
         if (!corkPending) {
             corkPending = true;
@@ -216,6 +256,7 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
     second->ownsData = false;
     second->compressPending = false;
     second->run = false;
+    second->windowSync = false;
     second->inScratch = false;
     second->rawOwned = nullptr;
     second->opCode = 0;
@@ -353,6 +394,7 @@ void WebSocket<isServer>::sendPrepared(typename WebSocket<isServer>::PreparedMes
     messagePtr->ownsData = false;      // pool blocks are reused: every flag must be set
     messagePtr->compressPending = false;
     messagePtr->run = false;
+    messagePtr->windowSync = false;
     messagePtr->inScratch = false;
     messagePtr->rawOwned = nullptr;
     messagePtr->opCode = 0;

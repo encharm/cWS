@@ -75,6 +75,14 @@ public:
             // A heap raw payload (compressPending message too large for a pool block) kept
             // until release(), so the worker never frees main-thread memory.
             const char *rawOwned = nullptr;
+            // History-sync entry for a takeover connection: nothing goes on the wire (length
+            // becomes 0 once processed); data/length are the prefix bytes and syncBody the
+            // payload bytes that an independently compressed prepared message carried, to be
+            // appended to the connection's deflate window in queue order (worker prepareSend,
+            // or materializePending on the main thread).
+            bool windowSync = false;
+            const char *syncBody = nullptr;
+            size_t syncBodyLength = 0;
             unsigned char opCode = 0;
         };
 
@@ -179,7 +187,7 @@ protected:
 
     void materializePending() {
         for (Queue::Message *m = messageQueue.front(); m; m = m->nextMessage) {
-            if (m->compressPending && materializeCb) {
+            if ((m->compressPending || m->windowSync) && materializeCb) {
                 materializeCb(this, m);
             }
         }
@@ -447,6 +455,7 @@ protected:
         slab->ownsData = false;
         slab->compressPending = false;
         slab->run = true;
+        slab->windowSync = false;
         slab->inScratch = false;
         slab->rawOwned = nullptr;
         slab->opCode = 0;
@@ -466,6 +475,7 @@ protected:
         messagePtr->ownsData = false;
         messagePtr->compressPending = false;
         messagePtr->run = false;
+        messagePtr->windowSync = false;
         messagePtr->inScratch = false;
         messagePtr->rawOwned = nullptr;
         messagePtr->opCode = 0;
@@ -564,6 +574,7 @@ protected:
                     messagePtr->ownsData = false;
                     messagePtr->compressPending = false;
                     messagePtr->run = false;
+                    messagePtr->windowSync = false;
                     messagePtr->inScratch = false;
                     messagePtr->rawOwned = nullptr;
                     messagePtr->opCode = 0;
@@ -598,6 +609,7 @@ protected:
                 messagePtr->ownsData = false;
                 messagePtr->compressPending = false;
                 messagePtr->run = false;
+                messagePtr->windowSync = false;
                 messagePtr->inScratch = false;
                 messagePtr->rawOwned = nullptr;
                 messagePtr->opCode = 0;
@@ -778,7 +790,7 @@ public:
     };
 
     bool consumeSent(ssize_t sent, std::vector<PendingCallback> *callbacks) {
-        while (sent > 0 && !messageQueue.empty()) {
+        while (!messageQueue.empty() && (sent > 0 || messageQueue.front()->length == 0)) {
             Queue::Message *m = messageQueue.front();
             if ((size_t) sent >= m->length) {
                 sent -= m->length;
@@ -964,6 +976,7 @@ public:
         messagePtr->ownsData = false;
         messagePtr->compressPending = true;
         messagePtr->run = false;
+        messagePtr->windowSync = false;
         messagePtr->inScratch = false;
         messagePtr->opCode = opCode;
         enqueue(messagePtr);

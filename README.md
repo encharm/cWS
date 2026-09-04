@@ -182,7 +182,8 @@ const wsServer = new WebSocket.Server({
    * noDelay?: boolean (set socket no delay)
    * noServer?: boolean (use this when upgrade done outside of cws)
    * maxPayload?: number 
-   * perMessageDeflate?: boolean | { serverNoContextTakeover?: boolean; windowBits?: number; memLevel?: number; threshold?: number }
+   * perMessageDeflate?: boolean | { serverNoContextTakeover?: boolean; windowBits?: number; memLevel?: number; threshold?: number }; level?: number }
+   *   serverNoContextTakeover: false enables context takeover (the last 32 KB sent on a connection are referenced by later messages, ~20-40% fewer bytes on RPC-style streams). At level 1 (the fast built-in encoder) it costs 64 KB per connection; level 2 and above use zlib-ng (~256 KB per connection, better ratio, ~3x the CPU). Takeover connections compress fan-out messages once per subscriber instead of once per prepared message.
    *   true = shared compressor, no context takeover. serverNoContextTakeover: false = per-socket
    *   sliding window (streaming compression; far better on small messages). windowBits 9..15 and
    *   memLevel 1..9 pick its memory tier: 15/8 = ~256 KB per socket (default), 12/5 = ~32 KB, 10/3 = ~8 KB.

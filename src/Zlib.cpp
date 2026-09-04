@@ -18,9 +18,14 @@ typedef z_stream ZStream;
 namespace cWS {
 namespace zlib {
 
+bool microDeflateEnabled();
+
 struct Stream {
     ZStream zs;
     bool isDeflate;
+    // Level-1 deflate streams with context takeover use the microdeflate window instead of
+    // the library (same fixed-tree output family, ~2x faster, 64 KB per stream); zs is unused then.
+    microdeflate::Window *window = nullptr;
 };
 
 typedef decltype(ZStream::next_in) InPtr;
@@ -29,6 +34,10 @@ typedef decltype(ZStream::next_out) OutPtr;
 Stream *createDeflate(int level, int windowBits, int memLevel) {
     Stream *stream = new Stream();
     stream->isDeflate = true;
+    if (level <= 1 && microDeflateEnabled()) {
+        stream->window = new microdeflate::Window();
+        return stream;
+    }
     ZFN(deflateInit2)(&stream->zs, level, Z_DEFLATED, -windowBits, memLevel, Z_DEFAULT_STRATEGY);
     return stream;
 }
@@ -41,7 +50,9 @@ Stream *createInflate(int windowBits) {
 }
 
 void reset(Stream *stream) {
-    if (stream->isDeflate) {
+    if (stream->window) {
+        stream->window->reset();
+    } else if (stream->isDeflate) {
         ZFN(deflateReset)(&stream->zs);
     } else {
         ZFN(inflateReset)(&stream->zs);
@@ -52,7 +63,9 @@ void destroy(Stream *stream) {
     if (!stream) {
         return;
     }
-    if (stream->isDeflate) {
+    if (stream->window) {
+        delete stream->window;
+    } else if (stream->isDeflate) {
         ZFN(deflateEnd)(&stream->zs);
     } else {
         ZFN(inflateEnd)(&stream->zs);
@@ -61,6 +74,21 @@ void destroy(Stream *stream) {
 }
 
 char *deflate(Stream *stream, char *data, size_t &length, char *buffer, size_t bufferSize, std::string &dynamic, bool resetAfter) {
+    if (stream->window) {
+        size_t need = microdeflate::bound(length);
+        uint8_t *out;
+        if (need <= bufferSize) {
+            out = (uint8_t *) buffer;
+        } else {
+            dynamic.resize(need);
+            out = (uint8_t *) &dynamic[0];
+        }
+        length = stream->window->compress((const uint8_t *) data, length, out);
+        if (resetAfter) {
+            stream->window->reset();
+        }
+        return (char *) out;
+    }
     ZStream &zs = stream->zs;
     dynamic.clear();
 

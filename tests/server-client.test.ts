@@ -793,6 +793,33 @@ describe('CWS send queue under pressure', (): void => {
     }
   });
 
+  it('Should round-trip context takeover with the microdeflate window (dedicated, level 1)', async (): Promise<void> => {
+    // 400 similar messages (history references), a 300 KB message (spans several window slides),
+    // then more small ones, then a burst to a slow reader; every byte must inflate correctly.
+    const small: Buffer[] = [];
+    for (let i: number = 0; i < 400; i++) { small.push(Buffer.from(JSON.stringify({ shortId: `jam${i % 40}`, connectedUsers: i % 17, thumbTimestamp: 1725300000000 + i, team: '66d5a1b2c3d4e5f6a7b8c9d0', shareType: i % 2 }))); }
+    const big: Buffer = Buffer.alloc(300 * 1024);
+    for (let i: number = 0; i < big.length; i++) { big[i] = (i * 7 + (i >> 9)) & 0xff; }
+    const expected: Buffer[] = [...small, big, ...small.slice(0, 50)];
+    const got: any = await new Promise((resolve: (v: any) => void, reject: (e: any) => void): void => {
+      const messages: Buffer[] = [];
+      const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { serverNoContextTakeover: false, level: 1, threshold: 0 } }, (): void => {
+        const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: { serverNoContextTakeover: false } });
+        client.on('message', (data: Buffer): void => {
+          messages.push(data);
+          if (messages.length % 50 === 0) { client.pause(); setTimeout((): void => client.resume(), 2); }
+          if (messages.length === expected.length) { client.close(); wsServer.close((): void => resolve(messages)); }
+        });
+        client.on('error', reject);
+      });
+      wsServer.on('connection', (ws: WebSocket): void => { for (const m of expected) { ws.send(m); } });
+    });
+    expect(got.length).to.equal(expected.length);
+    for (let i: number = 0; i < expected.length; i++) {
+      expect(got[i].equals(expected[i])).to.equal(true, `message ${i}`);
+    }
+  });
+
   it('Should interleave callbacks, prepared payloads and plain sends in order', async (): Promise<void> => {
     const prepared: PreparedMessage = new PreparedMessage(Buffer.from('shared-payload'));
     const order: string[] = [];

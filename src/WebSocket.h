@@ -44,7 +44,8 @@ protected:
     void *slidingDeflateWindow = nullptr;
     static void materialize(cS::Socket *s, cS::Socket::Queue::Message *m);
 
-    WebSocket(bool perMessageDeflate, cS::Socket *socket);
+    // contextTakeover: negotiated per connection; false gives an independent compressor even in a window group
+    WebSocket(bool perMessageDeflate, cS::Socket *socket, bool contextTakeover = true);
 
     static cS::Socket *onData(cS::Socket *s, char *data, size_t length);
     static void onEnd(cS::Socket *s);

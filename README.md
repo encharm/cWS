@@ -310,6 +310,17 @@ for (const ws of subscribers) {
 
 `send` accepts a `PreparedMessage` wherever it accepts a buffer, plus a `prefix` option (a per-socket header, string or bytes) spliced in front of the payload inside the same frame. `binary` defaults to `true` for prepared messages; `compress` defaults to the server's `threshold` applied to the total length. The payload is never copied or compressed per socket: without deflate it is a second gather buffer in the end-of-tick write; with the shared compressor it is deflated once, on the first compressed send, and the prefix is spliced in front as a DEFLATE stored block. Sockets negotiated with context takeover (`serverNoContextTakeover: false`) and client sockets fall back to the regular path. Handles are released when garbage collected; sends in flight keep their own reference.
 
+### Compression stats
+
+`server.stats` returns cumulative send counters since the module loaded:
+
+```js
+const { messages, rawBytes, wireBytes, compressedMessages } = server.stats;
+// rawBytes / wireBytes is the effective compression ratio; rawBytes - wireBytes the bytes saved.
+```
+
+`rawBytes` is what was handed to `send`, `wireBytes` what went out (framed, compressed where it applied). Whether a connection uses context takeover is visible in its handshake: the `Sec-WebSocket-Extensions` response omits `server_no_context_takeover` for takeover and includes it for shared mode.
+
 ### Secure WebSocket
 You can use `wss://` with `cws` by providing `https` server to `cws` and setting `secureProtocol` on https options:
 

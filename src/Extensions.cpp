@@ -97,8 +97,12 @@ std::string ExtensionsNegotiator<isServer>::generateOffer() {
         // It is RECOMMENDED that a server supports the
         // "server_no_context_takeover" extension parameter in an extension
         // negotiation offer.
-        if (options & Options::SERVER_NO_CONTEXT_TAKEOVER) {
-            //extensionsOffer += "; server_no_context_takeover";
+        // Announce that we will not keep context between messages, either because this group has
+        // no per-connection window (shared mode) or because the client asked (RFC 7692 7.1.1.1:
+        // an accepted offer carrying server_no_context_takeover must echo it). Its absence tells
+        // the client (and DevTools) that the connection is running with context takeover.
+        if (isServer && (!(options & Options::SLIDING_DEFLATE_WINDOW) || (options & Options::SERVER_NO_CONTEXT_TAKEOVER))) {
+            extensionsOffer += "; server_no_context_takeover";
         }
 
         // Tell the peer our LZ77 window is smaller than the default so it can

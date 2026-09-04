@@ -201,20 +201,28 @@ cS::Socket *HttpSocket<isServer>::onData(cS::Socket *s, char *data, size_t lengt
 // todo: make this into a transformer and make use of sendTransformed
 template <bool isServer>
 void HttpSocket<isServer>::upgrade(const char *secKey, const char *extensions, size_t extensionsLength,
-                                   const char *subprotocol, size_t subprotocolLength, bool *perMessageDeflate) {
+                                    const char *subprotocol, size_t subprotocolLength, bool *perMessageDeflate, bool *contextTakeover) {
 
     Queue::Message *messagePtr;
 
     if (isServer) {
         *perMessageDeflate = false;
+        if (contextTakeover) {
+            *contextTakeover = false;
+        }
         std::string extensionsResponse;
         if (extensionsLength) {
             Group<isServer> *group = Group<isServer>::from(this);
             ExtensionsNegotiator<cWS::SERVER> extensionsNegotiator(group->extensionOptions, group->deflateWindowBits);
             extensionsNegotiator.readOffer(std::string(extensions, extensionsLength));
             extensionsResponse = extensionsNegotiator.generateOffer();
-            if (extensionsNegotiator.getNegotiatedOptions() & PERMESSAGE_DEFLATE) {
+            int negotiated = extensionsNegotiator.getNegotiatedOptions();
+            if (negotiated & PERMESSAGE_DEFLATE) {
                 *perMessageDeflate = true;
+                // the server keeps context only when configured for a window and the client did not opt out
+                if (contextTakeover) {
+                    *contextTakeover = (negotiated & SLIDING_DEFLATE_WINDOW) && !(negotiated & SERVER_NO_CONTEXT_TAKEOVER);
+                }
             }
         }
 

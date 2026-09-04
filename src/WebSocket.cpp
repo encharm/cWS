@@ -5,12 +5,12 @@
 namespace cWS {
 
 template <bool isServer>
-WebSocket<isServer>::WebSocket(bool perMessageDeflate, cS::Socket *socket) : cS::Socket(std::move(*socket)) {
+WebSocket<isServer>::WebSocket(bool perMessageDeflate, cS::Socket *socket, bool contextTakeover) : cS::Socket(std::move(*socket)) {
     compressionStatus = perMessageDeflate ? CompressionStatus::ENABLED : CompressionStatus::DISABLED;
     setCorkable(true);
 
     // if we are created in a group with sliding deflate window allocate it here
-    if (Group<isServer>::from(this)->extensionOptions & SLIDING_DEFLATE_WINDOW) {
+    if ((Group<isServer>::from(this)->extensionOptions & SLIDING_DEFLATE_WINDOW) && contextTakeover) {
         Group<isServer> *group = Group<isServer>::from(this);
         slidingDeflateWindow = Hub::allocateDefaultCompressor(group->deflateLevel, group->deflateWindowBits, group->deflateMemLevel);
     }
@@ -54,14 +54,21 @@ void WebSocket<isServer>::send(const char *message, size_t length, OpCode opCode
         }
 
         static size_t transform(const char *src, char *dst, size_t length, TransformData transformData) {
+            size_t framed;
             if (transformData.compress) {
                 char *deflated = Group<isServer>::from(transformData.s)->hub->deflate((char *) src, length, (zlib::Stream *) transformData.s->slidingDeflateWindow);
-                return WebSocketProtocol<isServer, WebSocket<isServer>>::formatMessage(dst, deflated, length, transformData.opCode, length, true);
+                framed = WebSocketProtocol<isServer, WebSocket<isServer>>::formatMessage(dst, deflated, length, transformData.opCode, length, true);
+                transformData.s->nodeData->sendStats->compressedMessages.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                framed = WebSocketProtocol<isServer, WebSocket<isServer>>::formatMessage(dst, src, length, transformData.opCode, length, false);
             }
-
-            return WebSocketProtocol<isServer, WebSocket<isServer>>::formatMessage(dst, src, length, transformData.opCode, length, false);
+            transformData.s->nodeData->sendStats->wireBytes.fetch_add(framed, std::memory_order_relaxed);
+            return framed;
         }
     };
+
+    nodeData->sendStats->messages.fetch_add(1, std::memory_order_relaxed);
+    nodeData->sendStats->rawBytes.fetch_add(length, std::memory_order_relaxed);
 
     if (transformData.compress && !ssl && corkActive() && cS::SendWorker::active()) {
         // deflate + framing happen on the send worker, not on the JS thread
@@ -147,6 +154,11 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
         }
         return;
     }
+    nodeData->sendStats->messages.fetch_add(1, std::memory_order_relaxed);
+    nodeData->sendStats->rawBytes.fetch_add(prefixLength + payload->raw.size(), std::memory_order_relaxed);
+    if (deflate) {
+        nodeData->sendStats->compressedMessages.fetch_add(1, std::memory_order_relaxed);
+    }
 
     const char *body;
     size_t bodyLength;
@@ -210,6 +222,7 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
     } else {
         first->length = (size_t) (p - dst);
     }
+    nodeData->sendStats->wireBytes.fetch_add((size_t) (p - dst) + (inlineBody ? 0 : bodyLength), std::memory_order_relaxed);
     if (historySync && !cS::SendWorker::active()) {
         // Without the worker, compressed messages are deflated at send() time, so the history
         // must be extended now, in wire order; no op can be in flight on this window.

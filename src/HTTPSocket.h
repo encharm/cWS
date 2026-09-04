@@ -124,7 +124,7 @@ struct WIN32_EXPORT HttpSocket : cS::Socket {
 
     void upgrade(const char *secKey, const char *extensions,
                  size_t extensionsLength, const char *subprotocol,
-                 size_t subprotocolLength, bool *perMessageDeflate);
+                 size_t subprotocolLength, bool *perMessageDeflate, bool *contextTakeover = nullptr);
 
 protected:
     friend struct cS::Socket;

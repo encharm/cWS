@@ -122,6 +122,9 @@ class WebSocketServer {
             this.upgradeConnection(req, socket, cb);
         }
     }
+    get stats() {
+        return shared_1.native.server.group.getStats(this.serverGroup);
+    }
     close(cb = shared_1.noop) {
         if (this.httpServer) {
             this.httpServer.removeListener('upgrade', this.onUpgradeRequest);

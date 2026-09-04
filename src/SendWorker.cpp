@@ -272,7 +272,7 @@ void SendWorker::freeOp(void *op) {
 // `op` non-null: the frame goes into the op's scratch arena (worker thread); null: heap frame
 // owned by the message (main-thread materialize). The raw payload is never freed here: it is
 // inline in the message's pool block or kept in rawOwned until the main thread releases it.
-static void deflateAndFrame(Socket::Queue::Message *m, cWS::zlib::Stream *stream, bool resetAfter, char *buffer, size_t bufferSize, std::string &dynamic, Socket::SendOp *op) {
+static void deflateAndFrame(Socket::Queue::Message *m, cWS::zlib::Stream *stream, bool resetAfter, char *buffer, size_t bufferSize, std::string &dynamic, Socket::SendOp *op, NodeData::SendStats *stats) {
     size_t compressedLength = m->length;
     // resetAfter == independent message (no context takeover): microdeflate; else the socket's window
     char *deflated = resetAfter ? cWS::zlib::deflateIndependent(stream, (char *) m->data, compressedLength, buffer, bufferSize, dynamic)
@@ -309,6 +309,8 @@ static void deflateAndFrame(Socket::Queue::Message *m, cWS::zlib::Stream *stream
     m->data = frame;
     m->length = frameLength;
     m->compressPending = false;
+    stats->wireBytes.fetch_add(frameLength, std::memory_order_relaxed);
+    stats->compressedMessages.fetch_add(1, std::memory_order_relaxed);
 }
 
 namespace {
@@ -320,7 +322,7 @@ namespace {
 }
 
 void Socket::materializeOnMain(Socket *s, Queue::Message *m, cWS::zlib::Stream *stream, bool resetAfter, char *buffer, size_t bufferSize, std::string &dynamic) {
-    deflateAndFrame(m, stream, resetAfter, buffer, bufferSize, dynamic, nullptr);
+    deflateAndFrame(m, stream, resetAfter, buffer, bufferSize, dynamic, nullptr, s->nodeData->sendStats);
 }
 
 // A partially sent frame that lives in the op's scratch would dangle once the op is reused:
@@ -353,7 +355,7 @@ void Socket::prepareSend(SendOp *op) {
             m->length = 0;
             m->windowSync = false;
         } else if (m->compressPending) {
-            deflateAndFrame(m, stream, !op->deflateWindow, workerBuffer, WORKER_BUFFER, workerDynamic, op);
+            deflateAndFrame(m, stream, !op->deflateWindow, workerBuffer, WORKER_BUFFER, workerDynamic, op, op->nodeData->sendStats);
         }
     }
     // 2. gather

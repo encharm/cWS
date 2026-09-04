@@ -26,6 +26,12 @@ export declare class WebSocketServer {
     }): void;
     startAutoPing(interval: number, appLevel?: boolean): void;
     handleUpgrade(req: HTTP.IncomingMessage, socket: Socket, upgradeHead: any, cb: (ws: WebSocket) => void): void;
+    get stats(): {
+        messages: number;
+        rawBytes: number;
+        wireBytes: number;
+        compressedMessages: number;
+    };
     close(cb?: () => void): void;
     private abortConnection;
     private upgradeConnection;

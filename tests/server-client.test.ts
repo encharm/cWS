@@ -849,6 +849,58 @@ describe('CWS send queue under pressure', (): void => {
     }
   });
 
+  it('Should announce server_no_context_takeover only in shared mode', async (): Promise<void> => {
+    const negotiate = (pmd: any, offer: string): Promise<string> => new Promise((resolve: (v: string) => void, reject: (e: any) => void): void => {
+      const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: pmd }, (): void => {
+        const socket: any = connect(port, '127.0.0.1');
+        let buffer: string = '';
+        socket.on('connect', (): void => socket.write(`GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: ${offer}\r\n\r\n`));
+        socket.on('data', (d: Buffer): void => {
+          buffer += d.toString('latin1');
+          if (buffer.includes('\r\n\r\n')) { const m: RegExpExecArray | null = /Sec-WebSocket-Extensions: ([^\r]*)/.exec(buffer); socket.destroy(); wsServer.close((): void => resolve(m ? m[1] : '')); }
+        });
+        socket.on('error', reject);
+      });
+    });
+    const browser: string = 'permessage-deflate; client_max_window_bits';
+    const asksNoServer: string = 'permessage-deflate; server_no_context_takeover; client_max_window_bits';
+    expect(await negotiate({ threshold: 128 }, browser)).to.contain('server_no_context_takeover');
+    expect(await negotiate({ serverNoContextTakeover: false, threshold: 128 }, browser)).to.not.contain('server_no_context_takeover');
+    expect(await negotiate({ serverNoContextTakeover: false, threshold: 128 }, asksNoServer)).to.contain('server_no_context_takeover');
+  });
+
+  it('Should count raw and wire bytes per server (stats)', async (): Promise<void> => {
+    const text: string = 'a compressible message '.repeat(50);   // 1150 B, compressed
+    const tiny: string = 'x';                                    // below threshold, plain
+    const prepared: PreparedMessage = new PreparedMessage(Buffer.from(text));
+    let statsBefore: any, statsAfter: any;
+    const got: any = await new Promise((resolve: (v: any) => void, reject: (e: any) => void): void => {
+      const messages: Buffer[] = [];
+      const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { threshold: 64 } }, (): void => {
+        statsBefore = wsServer.stats;
+        const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: true });
+        client.on('message', (data: Buffer): void => {
+          messages.push(data);
+          if (messages.length === 4) { statsAfter = wsServer.stats; client.close(); wsServer.close((): void => resolve(messages)); }
+        });
+        client.on('error', reject);
+      });
+      wsServer.on('connection', (ws: WebSocket): void => {
+        ws.send(text);
+        ws.send(tiny);
+        ws.send(prepared, { prefix: 'p:', binary: false });
+        ws.send(Buffer.from(text));
+      });
+    });
+    expect(got.length).to.equal(4);
+    const d: any = { messages: statsAfter.messages - statsBefore.messages, rawBytes: statsAfter.rawBytes - statsBefore.rawBytes, wireBytes: statsAfter.wireBytes - statsBefore.wireBytes, compressedMessages: statsAfter.compressedMessages - statsBefore.compressedMessages };
+    expect(d.messages).to.equal(4);
+    expect(d.rawBytes).to.equal(text.length * 3 + 1 + 2);
+    expect(d.compressedMessages).to.equal(3);
+    expect(d.wireBytes).to.be.greaterThan(0);
+    expect(d.wireBytes).to.be.lessThan(d.rawBytes / 3);   // three of four messages compress ~10x
+  });
+
   it('Should interleave callbacks, prepared payloads and plain sends in order', async (): Promise<void> => {
     const prepared: PreparedMessage = new PreparedMessage(Buffer.from('shared-payload'));
     const order: string[] = [];

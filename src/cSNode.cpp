@@ -52,6 +52,7 @@ Node::Node(int recvLength, int prePadding, int postPadding, bool useDefaultLoop)
     nodeData->corkState = new NodeData::CorkState;
 
     nodeData->pool = new NodeData::BlockPool;
+    nodeData->sendStats = new NodeData::SendStats;
 
     nodeData->clientContext = SSL_CTX_new(TLS_method());
     SSL_CTX_set_min_proto_version(nodeData->clientContext, TLS1_VERSION);
@@ -77,6 +78,7 @@ Node::~Node() {
         }
     }
     delete nodeData->pool;
+    delete nodeData->sendStats;
     delete nodeData->corkState;
     delete nodeData->netContext;
     delete nodeData;

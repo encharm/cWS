@@ -644,6 +644,23 @@ void sendPrepared(const FunctionCallbackInfo<Value> &args) {
               ->Value());
 }
 
+// { messages, rawBytes, wireBytes, compressedMessages } for a group, cumulative since load.
+template <bool isServer>
+void getStats(const FunctionCallbackInfo<Value> &args) {
+  Isolate *isolate = args.GetIsolate();
+  cS::NodeData *nodeData = (cS::NodeData *) args[0].As<External>()->Value();
+  Local<Object> stats = Object::New(isolate);
+  Local<Context> context = isolate->GetCurrentContext();
+  auto set = [&](const char *name, uint64_t value) {
+    stats->Set(context, String::NewFromUtf8(isolate, name).ToLocalChecked(), Number::New(isolate, (double) value)).Check();
+  };
+  set("messages", nodeData->sendStats->messages.load(std::memory_order_relaxed));
+  set("rawBytes", nodeData->sendStats->rawBytes.load(std::memory_order_relaxed));
+  set("wireBytes", nodeData->sendStats->wireBytes.load(std::memory_order_relaxed));
+  set("compressedMessages", nodeData->sendStats->compressedMessages.load(std::memory_order_relaxed));
+  args.GetReturnValue().Set(stats);
+}
+
 template <bool isServer>
 void prepareShared(const FunctionCallbackInfo<Value> &args) {
   NativeString nativeString(args.GetIsolate(), args[0]);
@@ -767,6 +784,7 @@ struct Namespace {
 
     Local<Object> group = Object::New(isolate);
     NODE_SET_METHOD(group, "onConnection", onConnection<isServer>);
+    NODE_SET_METHOD(group, "getStats", getStats<isServer>);
     NODE_SET_METHOD(group, "onMessage", onMessage<isServer>);
     NODE_SET_METHOD(group, "onDisconnection", onDisconnection<isServer>);
 

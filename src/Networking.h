@@ -73,6 +73,7 @@ inline SOCKET dup(SOCKET socket) {
 #include <openssl/ssl.h>
 #include <csignal>
 #include <vector>
+#include <atomic>
 #include <string>
 #include <mutex>
 #include <algorithm>
@@ -219,6 +220,13 @@ struct WIN32_EXPORT NodeData {
         std::vector<char *> free[(preAllocMaxSize >> 4) + 1];
     };
     BlockPool *pool;
+    // Send counters for the group: what was handed to send() (raw) versus what went on the
+    // wire (framed, compressed when it was). Updated from the main thread and, for frames
+    // built on the send worker, from the worker; relaxed atomics, no ordering needed.
+    struct SendStats {
+        std::atomic<uint64_t> messages{0}, rawBytes{0}, wireBytes{0}, compressedMessages{0};
+    };
+    SendStats *sendStats;
     SSL_CTX *clientContext;
 
     Async *async = nullptr;

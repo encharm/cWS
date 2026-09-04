@@ -165,6 +165,16 @@ export class WebSocketServer {
     }
   }
 
+  /**
+   * Cumulative send counters for this server since the module loaded: messages handed to
+   * `send`, their payload bytes, the bytes that went on the wire (framed, compressed where
+   * it applied) and how many messages were compressed. `rawBytes / wireBytes` is the
+   * effective compression ratio in production.
+   */
+  public get stats(): { messages: number, rawBytes: number, wireBytes: number, compressedMessages: number } {
+    return native.server.group.getStats(this.serverGroup);
+  }
+
   public close(cb: () => void = noop): void {
     if (this.httpServer) {
       this.httpServer.removeListener('upgrade', this.onUpgradeRequest);

@@ -33,6 +33,7 @@ namespace {
     uv_async_t mainWake;
     bool signalPending = false;                 // main thread: submit() since the last flush()
     std::vector<Socket::SendOp *> freeOps;      // main thread only
+    NodeData::SendStats *lastStats = nullptr;   // worker thread: the batch's stats, for the wake counter
     std::atomic<bool> loopIdle{false};          // main: set before blocking in poll, cleared after
     std::atomic<bool> workerSleeping{false};    // worker: set before blocking on the semaphore
     int spinMicros = 50;
@@ -144,6 +145,7 @@ namespace {
             }
             bool any = false, wake = false;
             while (toWorker->try_dequeue(op)) {
+                lastStats = op->nodeData->sendStats;
                 Socket::performSend(op);
                 toMain->enqueue(op);
                 any = true;
@@ -159,6 +161,7 @@ namespace {
                 // Dekker with beforePoll(): either it sees our completion, or we see loopIdle
                 std::atomic_thread_fence(std::memory_order_seq_cst);
                 if (wake && loopIdle.load(std::memory_order_seq_cst)) {
+                    if (lastStats) lastStats->completionWakes.fetch_add(1, std::memory_order_relaxed);
                     uv_async_send(&mainWake);
                 }
 #ifdef __linux__
@@ -203,9 +206,12 @@ const char *SendWorker::status() { return workerStatus; }
 
 bool SendWorker::submit(void *op) {
     // try_enqueue never allocates; a full queue means "send it yourself this tick".
-    if (!toWorker->try_enqueue((Socket::SendOp *) op)) {
+    Socket::SendOp *o = (Socket::SendOp *) op;
+    if (!toWorker->try_enqueue(o)) {
+        o->nodeData->sendStats->workerFull.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
+    o->nodeData->sendStats->workerOps.fetch_add(1, std::memory_order_relaxed);
     signalPending = true;
     return true;
 }
@@ -273,6 +279,7 @@ void SendWorker::freeOp(void *op) {
 // owned by the message (main-thread materialize). The raw payload is never freed here: it is
 // inline in the message's pool block or kept in rawOwned until the main thread releases it.
 static void deflateAndFrame(Socket::Queue::Message *m, cWS::zlib::Stream *stream, bool resetAfter, char *buffer, size_t bufferSize, std::string &dynamic, Socket::SendOp *op, NodeData::SendStats *stats) {
+    auto compressStart = std::chrono::steady_clock::now();
     size_t compressedLength = m->length;
     // resetAfter == independent message (no context takeover): microdeflate; else the socket's window
     char *deflated = resetAfter ? cWS::zlib::deflateIndependent(stream, (char *) m->data, compressedLength, buffer, bufferSize, dynamic)
@@ -311,6 +318,8 @@ static void deflateAndFrame(Socket::Queue::Message *m, cWS::zlib::Stream *stream
     m->compressPending = false;
     stats->wireBytes.fetch_add(frameLength, std::memory_order_relaxed);
     stats->compressedMessages.fetch_add(1, std::memory_order_relaxed);
+    stats->compressCalls.fetch_add(1, std::memory_order_relaxed);
+    stats->compressNanos.fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - compressStart).count(), std::memory_order_relaxed);
 }
 
 namespace {

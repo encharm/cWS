@@ -31,6 +31,11 @@ export declare class WebSocketServer {
         rawBytes: number;
         wireBytes: number;
         compressedMessages: number;
+        compressNanos: number;
+        compressCalls: number;
+        workerOps: number;
+        workerFull: number;
+        completionWakes: number;
     };
     close(cb?: () => void): void;
     private abortConnection;

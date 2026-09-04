@@ -899,6 +899,15 @@ describe('CWS send queue under pressure', (): void => {
     expect(d.compressedMessages).to.equal(3);
     expect(d.wireBytes).to.be.greaterThan(0);
     expect(d.wireBytes).to.be.lessThan(d.rawBytes / 3);   // three of four messages compress ~10x
+    // performance counters: three compressed messages, timed, and the worker did some work
+    // Two of the four are compressed per-socket (text + Buffer); the prepared message is compressed
+    // once at prepare time, not on this socket, so it does not add a compress call here.
+    // The two per-socket compressible messages (text + Buffer) are compressed here in every mode;
+    // the prepared blob is compressed at prepare time (worker) or first send (no worker).
+    const p: any = { compressCalls: statsAfter.compressCalls - statsBefore.compressCalls, compressNanos: statsAfter.compressNanos - statsBefore.compressNanos };
+    expect(p.compressCalls).to.be.greaterThanOrEqual(2);
+    expect(p.compressNanos).to.be.greaterThan(0);
+    expect(statsAfter.workerOps).to.be.greaterThanOrEqual(statsBefore.workerOps);
   });
 
   it('Should interleave callbacks, prepared payloads and plain sends in order', async (): Promise<void> => {

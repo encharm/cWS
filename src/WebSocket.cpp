@@ -1,4 +1,5 @@
 #include "WebSocket.h"
+#include <chrono>
 #include "Group.h"
 #include "Hub.h"
 
@@ -56,9 +57,13 @@ void WebSocket<isServer>::send(const char *message, size_t length, OpCode opCode
         static size_t transform(const char *src, char *dst, size_t length, TransformData transformData) {
             size_t framed;
             if (transformData.compress) {
+                auto t0 = std::chrono::steady_clock::now();
                 char *deflated = Group<isServer>::from(transformData.s)->hub->deflate((char *) src, length, (zlib::Stream *) transformData.s->slidingDeflateWindow);
                 framed = WebSocketProtocol<isServer, WebSocket<isServer>>::formatMessage(dst, deflated, length, transformData.opCode, length, true);
-                transformData.s->nodeData->sendStats->compressedMessages.fetch_add(1, std::memory_order_relaxed);
+                auto *st = transformData.s->nodeData->sendStats;
+                st->compressedMessages.fetch_add(1, std::memory_order_relaxed);
+                st->compressCalls.fetch_add(1, std::memory_order_relaxed);
+                st->compressNanos.fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(), std::memory_order_relaxed);
             } else {
                 framed = WebSocketProtocol<isServer, WebSocket<isServer>>::formatMessage(dst, src, length, transformData.opCode, length, false);
             }

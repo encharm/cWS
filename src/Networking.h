@@ -225,6 +225,12 @@ struct WIN32_EXPORT NodeData {
     // built on the send worker, from the worker; relaxed atomics, no ordering needed.
     struct SendStats {
         std::atomic<uint64_t> messages{0}, rawBytes{0}, wireBytes{0}, compressedMessages{0};
+        // Performance: nanoseconds spent compressing (deflate + frame), the compress call count,
+        // worker ops submitted, ops that fell back to a synchronous send because the worker queue
+        // was full, and completion wakes actually delivered to the JS thread (a low ratio of wakes
+        // to ops means the loop drained them in its hooks without a syscall).
+        std::atomic<uint64_t> compressNanos{0}, compressCalls{0};
+        std::atomic<uint64_t> workerOps{0}, workerFull{0}, completionWakes{0};
     };
     SendStats *sendStats;
     SSL_CTX *clientContext;

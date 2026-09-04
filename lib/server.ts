@@ -171,7 +171,15 @@ export class WebSocketServer {
    * it applied) and how many messages were compressed. `rawBytes / wireBytes` is the
    * effective compression ratio in production.
    */
-  public get stats(): { messages: number, rawBytes: number, wireBytes: number, compressedMessages: number } {
+  public get stats(): {
+    messages: number, rawBytes: number, wireBytes: number, compressedMessages: number,
+    // performance: total time spent compressing and the compress-call count (mean us/message =
+    // compressNanos/1000/compressCalls), plus send-worker health (ops handed off, ops that fell
+    // back to a synchronous send because its queue was full, and completion wakes actually sent
+    // to the JS thread — completionWakes/workerOps well below 1 means the loop drained them in
+    // its hooks without a syscall).
+    compressNanos: number, compressCalls: number, workerOps: number, workerFull: number, completionWakes: number,
+  } {
     return native.server.group.getStats(this.serverGroup);
   }
 

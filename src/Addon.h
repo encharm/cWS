@@ -658,6 +658,11 @@ void getStats(const FunctionCallbackInfo<Value> &args) {
   set("rawBytes", nodeData->sendStats->rawBytes.load(std::memory_order_relaxed));
   set("wireBytes", nodeData->sendStats->wireBytes.load(std::memory_order_relaxed));
   set("compressedMessages", nodeData->sendStats->compressedMessages.load(std::memory_order_relaxed));
+  set("compressNanos", nodeData->sendStats->compressNanos.load(std::memory_order_relaxed));
+  set("compressCalls", nodeData->sendStats->compressCalls.load(std::memory_order_relaxed));
+  set("workerOps", nodeData->sendStats->workerOps.load(std::memory_order_relaxed));
+  set("workerFull", nodeData->sendStats->workerFull.load(std::memory_order_relaxed));
+  set("completionWakes", nodeData->sendStats->completionWakes.load(std::memory_order_relaxed));
   args.GetReturnValue().Set(stats);
 }
 

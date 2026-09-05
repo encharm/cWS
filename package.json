@@ -1,6 +1,6 @@
 {
   "name": "@encharm/cws",
-  "version": "4.14.2",
+  "version": "4.14.3",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "description": "cWS - fast C++ WebSocket implementation for Node.js",
@@ -10,7 +10,9 @@
     "clean": "rimraf dist/bindings/*",
     "install": "node scripts/install.js",
     "build-ts": "rimraf dist/*.js && rimraf dist/*.ts && npm run lint && tsc",
-    "build-cpp": "node-gyp rebuild > build_log.txt 2>&1 || exit 0"
+    "build-cpp": "node-gyp rebuild > build_log.txt 2>&1 || exit 0",
+    "verify-bindings": "node scripts/verify-bindings.js",
+    "prepublishOnly": "node scripts/verify-bindings.js"
   },
   "keywords": [
     "tiny",

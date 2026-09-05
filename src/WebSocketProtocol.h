@@ -346,27 +346,47 @@ public:
             parseNext:
             while (length >= SHORT_MESSAGE_HEADER) {
 
-                // invalid reserved bits / invalid opcodes / invalid control frames / set compressed frame
-                if ((rsv1(src) && !Impl::setCompressed(wState)) || rsv23(src) || (getOpCode(src) > 2 && getOpCode(src) < 8) ||
+                // invalid reserved bits / invalid opcodes / invalid control frames
+                if (rsv23(src) || (getOpCode(src) > 2 && getOpCode(src) < 8) ||
                     getOpCode(src) > 10 || (getOpCode(src) > 2 && (!isFin(src) || payloadLength(src) > 125))) {
                     Impl::forceClose(wState);
                     return;
                 }
 
+                // The compressed flag is recorded only once the whole header is here: a 126/127
+                // header split across two reads is spilled and parsed again on the next read, and
+                // setCompressed refuses a second call for the same message (that is how a second
+                // RSV1 fragment is rejected), which used to close the connection on the re-parse.
                 if (payloadLength(src) < 126) {
+                    if (rsv1(src) && !Impl::setCompressed(wState)) {
+                        Impl::forceClose(wState);
+                        return;
+                    }
                     if (consumeMessage<SHORT_MESSAGE_HEADER, uint8_t>(payloadLength(src), src, length, wState)) {
                         return;
                     }
                 } else if (payloadLength(src) == 126) {
                     if (length < MEDIUM_MESSAGE_HEADER) {
                         break;
-                    } else if(consumeMessage<MEDIUM_MESSAGE_HEADER, uint16_t>(ntohs(*(uint16_t *) &src[2]), src, length, wState)) {
+                    }
+                    if (rsv1(src) && !Impl::setCompressed(wState)) {
+                        Impl::forceClose(wState);
                         return;
                     }
-                } else if (length < LONG_MESSAGE_HEADER) {
-                    break;
-                } else if (consumeMessage<LONG_MESSAGE_HEADER, uint64_t>(be64toh(*(uint64_t *) &src[2]), src, length, wState)) {
-                    return;
+                    if (consumeMessage<MEDIUM_MESSAGE_HEADER, uint16_t>(ntohs(*(uint16_t *) &src[2]), src, length, wState)) {
+                        return;
+                    }
+                } else {
+                    if (length < LONG_MESSAGE_HEADER) {
+                        break;
+                    }
+                    if (rsv1(src) && !Impl::setCompressed(wState)) {
+                        Impl::forceClose(wState);
+                        return;
+                    }
+                    if (consumeMessage<LONG_MESSAGE_HEADER, uint64_t>(be64toh(*(uint64_t *) &src[2]), src, length, wState)) {
+                        return;
+                    }
                 }
             }
             if (length) {

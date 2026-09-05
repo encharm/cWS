@@ -849,6 +849,33 @@ describe('CWS send queue under pressure', (): void => {
     }
   });
 
+  it('Should accept a compressed frame whose length header arrives split across two reads', async (): Promise<void> => {
+    // A 126/127-length header spilled across a TCP read boundary is re-parsed on the next read; the
+    // compressed flag must not be recorded twice (that used to close the connection with 1006).
+    const raw: Buffer = randomBytes(400);                                    // incompressible: deflated length >= 126
+    let deflated: Buffer = deflateRawSync(raw, { finishFlush: zlibConstants.Z_SYNC_FLUSH });
+    deflated = deflated.subarray(0, deflated.length - 4);
+    const mask: Buffer = Buffer.from([1, 2, 3, 4]);
+    const header: Buffer = Buffer.alloc(4); header[0] = 0x82 | 0x40; header[1] = 126 | 0x80; header.writeUInt16BE(deflated.length, 2);
+    const frame: Buffer = Buffer.concat([header, mask, Buffer.from(deflated.map((b: number, i: number) => b ^ mask[i & 3]))]);
+    for (const split of [1, 2, 3, 5, 6, 7, 8, 20]) {
+      const got: number = await new Promise((resolve: (v: number) => void, reject: (e: any) => void): void => {
+        const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { threshold: 0 } }, (): void => {
+          const socket: any = connect(port, '127.0.0.1');
+          let upgraded: boolean = false;
+          socket.on('connect', (): void => { socket.setNoDelay(true); socket.write(`GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover\r\n\r\n`); });
+          socket.on('data', (): void => { if (upgraded) { return; } upgraded = true; socket.write(frame.subarray(0, split)); setTimeout((): void => socket.write(frame.subarray(split)), 30); });
+          socket.on('error', reject);
+          wsServer.on('connection', (ws: WebSocket): void => {
+            ws.on('message', (m: ArrayBuffer): void => { const n: number = m.byteLength; socket.destroy(); wsServer.close((): void => resolve(n)); });   // read before the view is detached
+            ws.on('close', (code: number): void => { if (code !== 1000) { socket.destroy(); wsServer.close((): void => reject(new Error(`closed with ${code} at split ${split}`))); } });
+          });
+        });
+      });
+      expect(got).to.equal(raw.length, `split ${split}`);
+    }
+  });
+
   it('Should announce server_no_context_takeover only in shared mode', async (): Promise<void> => {
     const negotiate = (pmd: any, offer: string): Promise<string> => new Promise((resolve: (v: string) => void, reject: (e: any) => void): void => {
       const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: pmd }, (): void => {

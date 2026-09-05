@@ -39,6 +39,9 @@ for %%v in (%v115% %v127% %v137% %v147%) do (
 )
 
 REM zlib-ng (vendored) built once as a static lib with its NMake makefile; -MT matches the addon's CRT.
+REM zconf-ng.h is generated from zconf-ng.h.in by the NMake step; a CMake run of zlib-ng (the
+REM Linux/macOS builds) renames it away, so regenerate it whenever it is missing.
+if not exist deps\zlib-ng\zconf-ng.h copy /y deps\zlib-ng\zconf-ng.h.in deps\zlib-ng\zconf-ng.h >nul
 if not exist deps\zlib-ng\zlib-ng.lib (
   pushd deps\zlib-ng
   nmake -nologo -f win32\Makefile.msc LOC="-MT" zlib-ng.lib || (popd & exit /b 1)

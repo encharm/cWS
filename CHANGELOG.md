@@ -1,3 +1,7 @@
+## Released 4.14.3
+* Fix: a compressed frame whose 2- or 8-byte extended length header was split across two TCP reads closed the connection with 1006. The parser recorded the RSV1 (compressed) flag before knowing the header was complete; the spilled header was parsed again on the next read and the second record was refused as a duplicate. The flag is now recorded once the whole header is present. Any client sending compressed messages of 126 bytes or more was exposed whenever a read boundary fell inside the header. Regression test across split offsets.
+* Packaging: the 4.14.2 tarball on npm shipped `cws_linux_x64_node137.node` as an aarch64 build (a sanitizer test build written into the x64 filename before publish), so 4.14.2 cannot load on Linux x64 with Node 24. 4.14.2 is deprecated; this release carries the correct binary. The release checklist now verifies every binding's architecture.
+
 ## Released 4.14.2
 * `server.stats` gains performance counters alongside the byte counts: `compressNanos` and `compressCalls` (mean compression time per message = compressNanos/1000/compressCalls µs), and send-worker health: `workerOps` handed off, `workerFull` that fell back to a synchronous send because the worker queue was full, and `completionWakes` actually delivered to the JS thread (completionWakes/workerOps well below 1 means the loop drained completions in its hooks with no syscall). Relaxed atomics on the paths that already do the work.
 

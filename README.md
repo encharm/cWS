@@ -190,6 +190,7 @@ const wsServer = new WebSocket.Server({
    *   threshold = minimum message size in bytes to compress (default 0); send(..., { compress }) overrides.
    *   Independent messages (the shared mode) are compressed by the built-in microdeflate encoder, ~1.7x faster
    *   than zlib-ng level 1 at the same ratio; CWS_MICRO_DEFLATE=0 falls back to zlib-ng.
+  `CWS_MICRO_INFLATE=0` disables the built-in inflate fast path for compressed client messages (zlib-ng handles them all).
    *   level 1..9 (default 1): deflate level of the per-socket compressor. The prebuilt bindings use zlib-ng
    *   (see `zlibBackend` export): level 1 is microdeflate (fast, fixed trees; with takeover a 64 KB per-connection window), level 2 and above zlib-ng, whose level 1 is its very fast "quick" strategy (~3-4x less CPU than zlib
    *   level 1 for ~8% worse ratio), level 2 matches zlib level 1's ratio.

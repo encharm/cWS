@@ -40,6 +40,8 @@ char *inflate(Stream *stream, char *data, size_t &length, size_t maxPayload, cha
 // shared zlib stream, reset after) is used. Same output contract as deflate().
 char *deflateIndependent(Stream *fallback, char *data, size_t &length, char *buffer, size_t bufferSize, std::string &dynamic);
 bool microDeflateEnabled();
+// The built-in inflate fast path (CWS_MICRO_INFLATE=0 disables; zlib-ng then handles every message).
+bool microInflateEnabled();
 
 // e.g. "zlib-ng 2.2.4" or "zlib 1.3.1"
 const char *backend();

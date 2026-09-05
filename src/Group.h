@@ -22,6 +22,7 @@ protected:
     friend struct WebSocket<isServer>;
     friend struct HttpSocket<false>;
     friend struct HttpSocket<true>;
+    friend struct cS::RecvWorker;
 
     std::function<void(WebSocket<isServer> *, HttpRequest)> connectionHandler;
     std::function<void(WebSocket<isServer> *)> transferHandler;
@@ -44,6 +45,9 @@ protected:
     int deflateWindowBits = 15;
     int deflateMemLevel = 8;
     int deflateLevel = 1;
+    // Server sockets upgraded into this group hand their readability to the receive worker
+    // (RecvWorker.h) when it is active; plain TCP only, SSL sockets stay on the loop.
+    bool receiveThread = false;
     cS::Timer *timer = nullptr, *httpTimer = nullptr;
     const char *userPingMessage;
     size_t userPingMessageLength;
@@ -88,6 +92,9 @@ public:
     void broadcast(const char *message, size_t length, OpCode opCode, bool isPing);
     void setUserData(void *user);
     void *getUserData();
+    void setReceiveThread(bool enable) {
+        receiveThread = enable;
+    }
 
     // Not thread safe
     void terminate();

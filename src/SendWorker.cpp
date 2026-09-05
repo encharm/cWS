@@ -427,7 +427,9 @@ void Socket::sendComplete(SendOp *op) {
             Queue::release(op->nodeData, m);
             m = next;
         }
-        if (op->closeFd) {
+        if (op->fdRelease) {
+            op->fdRelease->release();   // shared with a pending receive-worker deregistration
+        } else if (op->closeFd) {
             op->nodeData->netContext->closeSocket(op->fd);
         }
         if (op->destroyWindow) {

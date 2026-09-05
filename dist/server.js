@@ -32,7 +32,7 @@ class WebSocketServer {
             }
             this.compressThreshold = typeof deflate.threshold === 'number' ? deflate.threshold : 0;
         }
-        this.serverGroup = shared_1.native.server.group.create(nativeOptions, this.options.maxPayload || shared_1.DEFAULT_PAYLOAD_LIMIT, windowBits, memLevel, level);
+        this.serverGroup = shared_1.native.server.group.create(nativeOptions, this.options.maxPayload || shared_1.DEFAULT_PAYLOAD_LIMIT, windowBits, memLevel, level, !!this.options.receiveThread);
         shared_1.setupNative(this.serverGroup, 'server', this);
         if (this.options.noServer) {
             return;

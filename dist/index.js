@@ -11,3 +11,4 @@ exports.secureProtocol = 'TLSv1_2_method';
 var shared_1 = require("./shared");
 Object.defineProperty(exports, "zlibBackend", { enumerable: true, get: function () { return shared_1.zlibBackend; } });
 Object.defineProperty(exports, "sendThread", { enumerable: true, get: function () { return shared_1.sendThread; } });
+Object.defineProperty(exports, "recvThread", { enumerable: true, get: function () { return shared_1.recvThread; } });

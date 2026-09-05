@@ -27,10 +27,11 @@ export declare type ServerConfigs = {
         level?: number;
         threshold?: number;
     };
+    receiveThread?: boolean;
     verifyClient?: (info: ConnectionInfo, next: VerifyClientNext) => void;
 };
 export { WebSocket } from './client';
 export { PreparedMessage } from './prepared';
 export { WebSocketServer } from './server';
 export declare const secureProtocol: string;
-export { zlibBackend, sendThread } from './shared';
+export { zlibBackend, sendThread, recvThread } from './shared';

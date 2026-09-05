@@ -38,6 +38,9 @@ export declare class WebSocketServer {
         completionWakes: number;
         reads: number;
         messagesIn: number;
+        recvWorkerWakes: number;
+        recvWorkerMessages: number;
+        recvStalls: number;
     };
     close(cb?: () => void): void;
     private abortConnection;

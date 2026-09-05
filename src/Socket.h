@@ -3,6 +3,7 @@
 
 #include "Networking.h"
 #include "SendWorker.h"
+#include "RecvWorker.h"
 #include "Zlib.h"
 #include <vector>
 #include <atomic>
@@ -134,6 +135,21 @@ public:
         }
     } messageQueue;
 
+    // Deferred close of an fd that two parties may still be using: an orphaned send op (the
+    // send worker may be inside sendmsg) and a pending receive-worker deregistration (the
+    // receive worker may be inside recv). Whoever releases last closes the fd. Main thread only.
+    struct FdRelease {
+        uv_os_sock_t fd;
+        int refs;
+        Context *netContext;
+        void release() {
+            if (--refs == 0) {
+                netContext->closeSocket(fd);
+                delete this;
+            }
+        }
+    };
+
     // One in-flight worker-thread send per socket (see SendWorker.h). The frames it
     // covers are moved out of messageQueue into the op, so nothing the worker reads
     // can be freed underneath it; the main thread takes them back on completion.
@@ -149,6 +165,8 @@ public:
         ssize_t result;
         int error;
         bool closeFd;
+        // Set instead of closeFd when the receive worker also holds the fd (see FdRelease).
+        FdRelease *fdRelease;
         // Set by the worker while gathering: some message carries a callback (needs main promptly).
         bool hasCallback;
         // Set by the main thread while the op is in flight when its completion must be handled
@@ -184,6 +202,18 @@ protected:
     bool workerOwnsWindow = false;
     // Deflates + frames a compressPending message on the main thread (set by WebSocket).
     void (*materializeCb)(Socket *, Queue::Message *) = nullptr;
+
+    // Receive worker (RecvWorker.h): non-null while the worker owns readability of this fd,
+    // from attach until its deregistration ack has been drained. While attached the poll
+    // handle watches nothing unless there is something to write (baseEvents = 0), so the
+    // main thread never recv()s on the fd. After closeSocket the object stays alive until
+    // both libuv has closed the poll handle (recvUvClosed) and the ack arrived (recvAcked);
+    // recvDestroy deletes it with the right type and recvFdRelease closes the fd.
+    void *recvConn = nullptr;
+    bool recvAcked = false, recvUvClosed = false;
+    void (*recvDestroy)(Socket *) = nullptr;
+    FdRelease *recvFdRelease = nullptr;
+    int baseEvents = UV_READABLE;
 
     void materializePending() {
         for (Queue::Message *m = messageQueue.front(); m; m = m->nextMessage) {
@@ -364,7 +394,7 @@ protected:
             // cork toggles (they were two setsockopt calls per drain).
             if (!socket->messageQueue.empty() && !socket->sendBusy()) {
                 if (SendWorker::active() && !socket->ssl) {
-                    socket->change(socket->nodeData->loop, socket, socket->setPoll(UV_READABLE));
+                    socket->change(socket->nodeData->loop, socket, socket->setPoll(socket->baseEvents));
                     if (socket->submitToWorker()) {
                         return;
                     }
@@ -387,7 +417,7 @@ protected:
                     }
                 }
                 if (socket->messageQueue.empty()) {
-                    socket->change(socket->nodeData->loop, socket, socket->setPoll(UV_READABLE));
+                    socket->change(socket->nodeData->loop, socket, socket->setPoll(socket->baseEvents));
                 }
                 for (PendingCallback &c : callbacks) {
                     c.callback(p, c.callbackData, false, c.reserved);
@@ -398,7 +428,8 @@ protected:
             }
         }
 
-        if (events & UV_READABLE) {
+        // readability belongs to the receive worker while recvConn is set (never armed, guarded anyway)
+        if ((events & UV_READABLE) && !socket->recvConn) {
             int length = (int) recv(socket->getFd(), nodeData->recvBuffer, nodeData->recvLength, 0);
             if (length > 0) {
                 deliverRead<STATE>((Socket *) p, nodeData, nodeData->recvBuffer, length);
@@ -833,7 +864,7 @@ public:
                 return; // the completion submits what has queued up meanwhile
             }
             if (getPoll() & UV_WRITABLE) {
-                change(nodeData->loop, this, setPoll(UV_READABLE));
+                change(nodeData->loop, this, setPoll(baseEvents));
             }
             if (submitToWorker()) {
                 return;
@@ -859,7 +890,7 @@ public:
                 changePoll(this);
             }
         } else if (getPoll() & UV_WRITABLE) {
-            change(nodeData->loop, this, setPoll(UV_READABLE));
+            change(nodeData->loop, this, setPoll(baseEvents));
         }
 
         for (PendingCallback &c : callbacks) {
@@ -924,6 +955,7 @@ public:
         op->result = 0;
         op->error = 0;
         op->closeFd = false;
+        op->fdRelease = nullptr;
         op->hasCallback = false;
         op->needWake.store(false, std::memory_order_relaxed);
         op->deflateWindow = workerDeflateWindow;
@@ -1015,7 +1047,30 @@ public:
         uv_os_sock_t fd = getFd();
         Context *netContext = nodeData->netContext;
         stop(nodeData->loop);
-        if (sendOp) {
+        if (recvConn) {
+            // The receive worker may be inside a recv on this fd (and the send worker inside a
+            // send): quiesce first. The worker is asked to deregister and acknowledges with a
+            // record; the fd is closed by the last of the ack and an orphaned send op
+            // (FdRelease), and the object is deleted once both the ack and libuv's close
+            // callback have happened (recvDeregistered / the close callback below).
+            FdRelease *release = new FdRelease{fd, sendOp ? 2 : 1, netContext};
+            recvFdRelease = release;
+            if (sendOp) {
+                sendOp->socket = nullptr;
+                sendOp->closeFd = false;
+                sendOp->fdRelease = release;
+                sendOp->needWake.store(true, std::memory_order_seq_cst);
+                if (workerDeflateWindow) {
+                    sendOp->destroyWindow = workerDeflateWindow;
+                    workerOwnsWindow = true;
+                }
+                sendOp = nullptr;
+            }
+            recvDestroy = [](Socket *s) {
+                delete (T *) s;
+            };
+            RecvWorker::detach(recvConn);
+        } else if (sendOp) {
             // The worker may be inside a send on this fd: closing it now could let the
             // number be reused by a new connection and receive our bytes. Orphan the op
             // and let its completion close the fd.
@@ -1035,9 +1090,31 @@ public:
             SSL_free(ssl);
         }
 
-        Poll::close(nodeData->loop, [](Poll *p) {
-            delete (T *) p;
-        });
+        if (recvConn) {
+            Poll::close(nodeData->loop, [](Poll *p) {
+                Socket *s = (Socket *) p;
+                s->recvUvClosed = true;
+                if (s->recvAcked) {
+                    s->recvDestroy(s);
+                }
+            });
+        } else {
+            Poll::close(nodeData->loop, [](Poll *p) {
+                delete (T *) p;
+            });
+        }
+    }
+
+    // Main thread, from the receive worker's drain: the deregistration ack for this socket
+    // arrived. Nothing reads the fd any more; release it and finish the deferred delete.
+    static void recvDeregistered(Socket *s) {
+        s->recvAcked = true;
+        s->recvConn = nullptr;
+        s->recvFdRelease->release();
+        s->recvFdRelease = nullptr;
+        if (s->recvUvClosed) {
+            s->recvDestroy(s);
+        }
     }
 
     bool isShuttingDown() {
@@ -1046,6 +1123,7 @@ public:
 
     friend class Node;
     friend struct NodeData;
+    friend struct RecvWorker;
 };
 
 struct ListenSocket : Socket {

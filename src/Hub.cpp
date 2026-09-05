@@ -190,7 +190,11 @@ void Hub::upgrade(uv_os_sock_t fd, const char *secKey, SSL *ssl, const char *ext
     WebSocket<SERVER> *webSocket = new WebSocket<SERVER>(perMessageDeflate, httpSocket, contextTakeover);
     delete httpSocket;
     webSocket->setState<WebSocket<SERVER>>();
-    webSocket->change(webSocket->nodeData->loop, webSocket, webSocket->setPoll(UV_READABLE));
+    // With the receive worker on for this group (plain TCP only) the worker reads the fd
+    // from here on; otherwise the loop polls it as always.
+    if (!(!ssl && serverGroup->receiveThread && webSocket->attachRecvWorker())) {
+        webSocket->change(webSocket->nodeData->loop, webSocket, webSocket->setPoll(UV_READABLE));
+    }
     serverGroup->addWebSocket(webSocket);
     serverGroup->connectionHandler(webSocket, {});
 }

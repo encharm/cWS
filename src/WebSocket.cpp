@@ -455,6 +455,26 @@ void WebSocket<isServer>::finalizeMessage(typename WebSocket<isServer>::Prepared
 }
 
 template <bool isServer>
+bool WebSocket<isServer>::attachRecvWorker() {
+    if (!isServer || ssl || !cS::RecvWorker::active()) {
+        return false;
+    }
+    Group<isServer> *group = Group<isServer>::from(this);
+    // Nothing to watch on the loop until a write stalls: uv_poll_start with 0 events stops the
+    // handle. change() also rebinds the handle's data pointer to this object (the HttpSocket
+    // it was moved from is deleted), which the close callback relies on.
+    baseEvents = 0;
+    change(nodeData->loop, this, setPoll(0));
+    recvConn = cS::RecvWorker::attach(this, getFd(), nodeData, group->maxPayload, compressionStatus != CompressionStatus::DISABLED);
+    if (!recvConn) {
+        baseEvents = UV_READABLE;
+        change(nodeData->loop, this, setPoll(UV_READABLE));
+        return false;
+    }
+    return true;
+}
+
+template <bool isServer>
 cS::Socket *WebSocket<isServer>::onData(cS::Socket *s, char *data, size_t length) {
     WebSocket<isServer> *webSocket = static_cast<WebSocket<isServer> *>(s);
 

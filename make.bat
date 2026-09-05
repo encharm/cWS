@@ -49,7 +49,7 @@ if not exist deps\zlib-ng\zlib-ng.lib (
 )
 
 set CLFLAGS=/nologo /std:c++20 /Zc:__cplusplus /EHsc /Ox /LD /DUSE_LIBUV /DHAVE_OPENSSL=1 /DCWS_ZLIB_NG /I deps\zlib-ng /I deps\readerwriterqueue
-set SOURCES=src\Addon.cpp src\Extensions.cpp src\Group.cpp src\Networking.cpp src\Hub.cpp src\cSNode.cpp src\WebSocket.cpp src\HTTPSocket.cpp src\Socket.cpp src\Zlib.cpp src\SendWorker.cpp
+set SOURCES=src\Addon.cpp src\Extensions.cpp src\Group.cpp src\Networking.cpp src\Hub.cpp src\cSNode.cpp src\WebSocket.cpp src\HTTPSocket.cpp src\Socket.cpp src\Zlib.cpp src\SendWorker.cpp src\RecvWorker.cpp
 
 call :build 20 %v115% 115 || exit /b 1
 call :build 22 %v127% 127 || exit /b 1

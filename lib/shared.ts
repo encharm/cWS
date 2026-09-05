@@ -24,6 +24,10 @@ export const native: any = ((): NodeRequire => {
 export const zlibBackend: string = native.zlibBackend;
 /** Send worker thread status: 'active', or the reason it is not. */
 export const sendThread: string = native.sendThread;
+/** Receive worker thread status: 'active' once a server enabled it, 'not started', or why it cannot run. */
+export function recvThread(): string {
+  return native.recvThread;
+}
 
 export function setupNative(group: any, type: string, wsServer?: WebSocketServer): void {
   native.setNoop(noop);

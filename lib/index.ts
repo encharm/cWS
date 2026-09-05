@@ -33,6 +33,13 @@ export type ServerConfigs = {
    * "quick" strategy (~8% worse ratio than zlib level 1), 2 matches zlib level 1's ratio at higher speed.
    */
   perMessageDeflate?: boolean | { serverNoContextTakeover?: boolean, windowBits?: number, memLevel?: number, level?: number, threshold?: number },
+  /**
+   * Receive on a native worker thread: plain-TCP connections of this server are read, parsed,
+   * unmasked and inflated off the JS thread, which only delivers the complete messages (as the
+   * usual zero-copy views). Default off. `CWS_RECV_THREAD=1` turns it on for every server,
+   * `CWS_RECV_THREAD=0` off; TLS connections always stay on the loop; ignored on Windows.
+   */
+  receiveThread?: boolean,
   verifyClient?: (info: ConnectionInfo, next: VerifyClientNext) => void
 };
 
@@ -43,4 +50,4 @@ export { WebSocketServer } from './server';
 export const secureProtocol: string = 'TLSv1_2_method';
 
 /** DEFLATE implementation compiled into the native binding, e.g. 'zlib-ng 2.2.4'. */
-export { zlibBackend, sendThread } from './shared';
+export { zlibBackend, sendThread, recvThread } from './shared';

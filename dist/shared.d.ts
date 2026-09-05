@@ -11,4 +11,5 @@ export declare const DEFAULT_PAYLOAD_LIMIT: number;
 export declare const native: any;
 export declare const zlibBackend: string;
 export declare const sendThread: string;
+export declare function recvThread(): string;
 export declare function setupNative(group: any, type: string, wsServer?: WebSocketServer): void;

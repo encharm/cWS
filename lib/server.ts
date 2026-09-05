@@ -47,7 +47,7 @@ export class WebSocketServer {
       this.compressThreshold = typeof deflate.threshold === 'number' ? deflate.threshold : 0;
     }
 
-    this.serverGroup = native.server.group.create(nativeOptions, this.options.maxPayload || DEFAULT_PAYLOAD_LIMIT, windowBits, memLevel, level);
+    this.serverGroup = native.server.group.create(nativeOptions, this.options.maxPayload || DEFAULT_PAYLOAD_LIMIT, windowBits, memLevel, level, !!this.options.receiveThread);
     setupNative(this.serverGroup, 'server', this);
 
     if (this.options.noServer) {
@@ -181,6 +181,9 @@ export class WebSocketServer {
     compressNanos: number, compressCalls: number, workerOps: number, workerFull: number, completionWakes: number,
     // inbound: socket reads and messages delivered; messagesIn/reads is how many frames a read carries on average
     reads: number, messagesIn: number,
+    // receive worker (`receiveThread`): loop wakes it issued, data messages it parsed, and times a
+    // connection was parked because the ring was full (the JS thread fell behind)
+    recvWorkerWakes: number, recvWorkerMessages: number, recvStalls: number,
   } {
     return native.server.group.getStats(this.serverGroup);
   }

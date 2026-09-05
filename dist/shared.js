@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.setupNative = exports.sendThread = exports.zlibBackend = exports.native = exports.DEFAULT_PAYLOAD_LIMIT = exports.SLIDING_DEFLATE_WINDOW = exports.PERMESSAGE_DEFLATE = exports.APP_PING_CODE = exports.OPCODE_BINARY = exports.OPCODE_PING = exports.OPCODE_TEXT = exports.noop = void 0;
+exports.setupNative = exports.recvThread = exports.sendThread = exports.zlibBackend = exports.native = exports.DEFAULT_PAYLOAD_LIMIT = exports.SLIDING_DEFLATE_WINDOW = exports.PERMESSAGE_DEFLATE = exports.APP_PING_CODE = exports.OPCODE_BINARY = exports.OPCODE_PING = exports.OPCODE_TEXT = exports.noop = void 0;
 const client_1 = require("./client");
 exports.noop = () => { };
 exports.OPCODE_TEXT = 1;
@@ -21,6 +21,10 @@ exports.native = (() => {
 })();
 exports.zlibBackend = exports.native.zlibBackend;
 exports.sendThread = exports.native.sendThread;
+function recvThread() {
+    return exports.native.recvThread;
+}
+exports.recvThread = recvThread;
 function setupNative(group, type, wsServer) {
     exports.native.setNoop(exports.noop);
     exports.native[type].group.onConnection(group, (external) => {

@@ -51,6 +51,10 @@ protected:
     static void onEnd(cS::Socket *s);
     using cS::Socket::closeSocket;
 
+    // Hands readability to the receive worker (server side, plain TCP, worker active); the
+    // poll handle then only watches for writability when there is something to send.
+    bool attachRecvWorker();
+
     static bool refusePayloadLength(uint64_t length, WebSocketState<isServer> *webSocketState) {
         WebSocket<isServer> *webSocket = static_cast<WebSocket<isServer> *>(webSocketState);
         return length > Group<isServer>::from(webSocket)->maxPayload;
@@ -105,6 +109,7 @@ public:
     friend struct Group<isServer>;
     friend struct HttpSocket<isServer>;
     friend struct cS::Socket;
+    friend struct cS::RecvWorker;
     friend class WebSocketProtocol<isServer, WebSocket<isServer>>;
 };
 

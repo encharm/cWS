@@ -234,11 +234,18 @@ struct WIN32_EXPORT NodeData {
         // Inbound: socket reads and messages delivered; messages/reads is the batching the
         // per-read callback scope can exploit (a read carrying one message saves nothing).
         std::atomic<uint64_t> reads{0}, messagesIn{0};
+        // Receive worker (RecvWorker.h): loop wakes it issued, data messages it parsed, and
+        // times a socket was parked because the ring was full.
+        std::atomic<uint64_t> recvWorkerWakes{0}, recvWorkerMessages{0}, recvStalls{0};
     };
     SendStats *sendStats;
     // Wraps every socket read's data delivery (set by the addon): opens one Node callback
     // scope per read so handlers run with a plain call and microtasks drain once per read.
     Socket *(*readHook)(Socket *, char *, size_t, Socket *(*inner)(Socket *, char *, size_t)) = nullptr;
+    // Same scope around a batch of records delivered from the receive worker's ring
+    // (RecvWorker::drain): `inner(arg)` delivers up to one batch; the views it handed out
+    // are detached when the hook returns, so the caller may then release the memory.
+    void (*readBatchHook)(void *arg, void (*inner)(void *arg)) = nullptr;
     SSL_CTX *clientContext;
 
     Async *async = nullptr;

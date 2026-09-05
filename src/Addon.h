@@ -8,6 +8,7 @@
 #include <uv.h>
 #include <cstring>
 #include "SendWorker.h"
+#include "RecvWorker.h"
 
 #define NODE_WANT_INTERNALS 1
 
@@ -93,7 +94,10 @@ void registerCheck(Isolate *isolate) {
   uv_check_start(&check, [](uv_check_t *check) {
     // Every handler runs through node::MakeCallback, which drains nextTicks and microtasks
     // itself; the check hook only has to hand completions back and flush corked writes.
+    // Records from the receive worker are delivered before the flush so that replies made
+    // by their handlers leave in this iteration.
     cS::SendWorker::afterPoll();
+    cS::RecvWorker::afterPoll();
     cS::Socket::flushCorked(hub.getNodeData());
   });
   uv_unref((uv_handle_t *)&check);
@@ -107,6 +111,12 @@ void registerCheck(Isolate *isolate) {
   uv_prepare_start(&corkPrepare, [](uv_prepare_t *) {
     cS::Socket::flushCorked(hub.getNodeData());
     cS::SendWorker::beforePoll();
+    // The receive worker's last look before the loop blocks may deliver messages whose
+    // handlers queued replies: flush those too, they would otherwise wait for the next wake.
+    if (cS::RecvWorker::beforePoll()) {
+      cS::Socket::flushCorked(hub.getNodeData());
+      cS::SendWorker::beforePoll();
+    }
   });
   uv_unref((uv_handle_t *)&corkPrepare);
 }
@@ -206,6 +216,11 @@ void createGroup(const FunctionCallbackInfo<Value> &args) {
   cWS::Group<isServer> *group = hub.createGroup<isServer>(
       args[0].As<Integer>()->Value(), args[1].As<Integer>()->Value(), windowBits, memLevel, level);
   installReadScope(args.GetIsolate(), (cS::NodeData *) group);
+  // Receive worker: per-server option (arg 5), overridable by CWS_RECV_THREAD; started lazily.
+  if (isServer && cS::RecvWorker::wanted(args.Length() > 5 && args[5]->IsTrue())) {
+    cS::RecvWorker::init((uv_loop_t *) hub.getLoop());
+    group->setReceiveThread(cS::RecvWorker::active());
+  }
   group->setUserData(new GroupData);
   args.GetReturnValue().Set(External::New(args.GetIsolate(), group));
 }
@@ -503,7 +518,9 @@ static void renewReadScope() {
   g_scope->emplace(isolate, Local<Object>::New(isolate, g_readResource), node::async_context{0, 0});
 }
 
-static cS::Socket *readScope(cS::Socket *s, char *data, size_t length, cS::Socket *(*inner)(cS::Socket *, char *, size_t)) {
+// Opens the read scope around `body` (one socket read, or one batch of receive-worker records).
+template <class F>
+static void withReadScope(F body) {
   Isolate *isolate = g_readIsolate;
   HandleScope hs(isolate);
   std::vector<Local<ArrayBuffer>> detach;
@@ -513,13 +530,25 @@ static cS::Socket *readScope(cS::Socket *s, char *data, size_t length, cS::Socke
   g_inRead = true;
   g_detach = &detach;
   g_scope = &scope;
-  cS::Socket *r = inner(s, data, length);
+  body();
   g_inRead = false;
   g_detach = nullptr;
   g_scope = nullptr;
   scope.reset();                                      // drain, then detach what the last batch handed out
   detachCollected(detach);
+}
+
+static cS::Socket *readScope(cS::Socket *s, char *data, size_t length, cS::Socket *(*inner)(cS::Socket *, char *, size_t)) {
+  cS::Socket *r;
+  withReadScope([&]() { r = inner(s, data, length); });
   return r;
+}
+
+// Same scope around a batch of records from the receive worker's ring: the views handed
+// out point into the ring (or a heap overflow record) and are detached before this returns,
+// so the drain may then advance the ring's read index and free the overflow records.
+static void readBatchScope(void *arg, void (*inner)(void *)) {
+  withReadScope([&]() { inner(arg); });
 }
 
 static bool readScopeEnabledFromEnv() {
@@ -536,6 +565,7 @@ static void installReadScope(Isolate *isolate, cS::NodeData *nodeData) {
     g_readIsolate = isolate;
   }
   nodeData->readHook = readScope;
+  nodeData->readBatchHook = readBatchScope;
 }
 
 template <bool isServer>
@@ -754,6 +784,9 @@ void getStats(const FunctionCallbackInfo<Value> &args) {
   set("completionWakes", nodeData->sendStats->completionWakes.load(std::memory_order_relaxed));
   set("reads", nodeData->sendStats->reads.load(std::memory_order_relaxed));
   set("messagesIn", nodeData->sendStats->messagesIn.load(std::memory_order_relaxed));
+  set("recvWorkerWakes", nodeData->sendStats->recvWorkerWakes.load(std::memory_order_relaxed));
+  set("recvWorkerMessages", nodeData->sendStats->recvWorkerMessages.load(std::memory_order_relaxed));
+  set("recvStalls", nodeData->sendStats->recvStalls.load(std::memory_order_relaxed));
   args.GetReturnValue().Set(stats);
 }
 

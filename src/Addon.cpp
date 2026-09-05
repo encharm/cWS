@@ -26,6 +26,11 @@ void Initialize(Local<Object> exports) {
   registerCheck(isolate);
   exports->Set(isolate->GetCurrentContext(), String::NewFromUtf8(isolate, "sendThread").ToLocalChecked(),
                String::NewFromUtf8(isolate, cS::SendWorker::status()).ToLocalChecked()).Check();
+  // The receive worker starts lazily (first server that asks for it), so this is a getter.
+  exports->SetNativeDataProperty(isolate->GetCurrentContext(), String::NewFromUtf8(isolate, "recvThread").ToLocalChecked(),
+               [](Local<Name>, const PropertyCallbackInfo<Value> &info) {
+                 info.GetReturnValue().Set(String::NewFromUtf8(info.GetIsolate(), cS::RecvWorker::status()).ToLocalChecked());
+               }).Check();
 }
 
 NODE_MODULE(addon, Initialize)

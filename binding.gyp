@@ -14,7 +14,8 @@
                 'src/HTTPSocket.cpp',
                 'src/Socket.cpp',
                 'src/Zlib.cpp',
-                'src/SendWorker.cpp'
+                'src/SendWorker.cpp',
+                'src/RecvWorker.cpp'
             ],
             # Node private headers vendored per major (see src/headers/); the Makefile passes the same -I.
             'include_dirs': [

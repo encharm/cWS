@@ -5,7 +5,7 @@ import { connect as tlsConnect } from 'tls';
 import { Server } from 'http';
 import { createServer as createServerHttps, Server as HttpsServer } from 'https';
 
-import { WebSocket, WebSocketServer, PreparedMessage, secureProtocol } from '../lib';
+import { WebSocket, WebSocketServer, PreparedMessage, secureProtocol, recvThread } from '../lib';
 
 import { WebSocket as WSWebSocket } from 'ws';
 import { constants as zlibConstants, deflateRawSync, inflateRawSync } from 'zlib';
@@ -995,4 +995,179 @@ describe('CWS send queue under pressure', (): void => {
     expect(got.messages.map((m: Buffer) => m.toString())).to.deep.equal(['a', 'b', 'c:shared-payload', 'd', 'e', 'shared-payload', 'g']);
     expect(order).to.deep.equal(['cb-b', 'cb-e']);
   });
+});
+
+describe('CWS receive worker thread', (): void => {
+  const port: number = 3007;
+  const handshake = (): string => `GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`;
+  // one masked binary frame
+  const frame = (payload: Buffer): Buffer => {
+    const mask: Buffer = randomBytes(4);
+    let header: Buffer;
+    if (payload.length < 126) { header = Buffer.from([0x82, 0x80 | payload.length]); }
+    else if (payload.length < 65536) { header = Buffer.alloc(4); header[0] = 0x82; header[1] = 0x80 | 126; header.writeUInt16BE(payload.length, 2); }
+    else { header = Buffer.alloc(10); header[0] = 0x82; header[1] = 0x80 | 127; header.writeBigUInt64BE(BigInt(payload.length), 2); }
+    const masked: Buffer = Buffer.alloc(payload.length);
+    for (let i: number = 0; i < payload.length; i++) { masked[i] = payload[i] ^ mask[i & 3]; }
+    return Buffer.concat([header, mask, masked]);
+  };
+  // raw upgraded TCP socket; resolves once the 101 arrived
+  const rawClient = (p: number): Promise<any> => new Promise((resolve: (s: any) => void, reject: (e: any) => void): void => {
+    const socket: any = connect(p, '127.0.0.1');
+    socket.on('connect', (): void => { socket.setNoDelay(true); socket.write(handshake()); });
+    socket.once('data', (): void => resolve(socket));
+    socket.on('error', (e: any): void => { if (!socket.upgraded) { reject(e); } });
+  });
+  const child = (mode: string, connections: number, perConnection: number): Promise<{ port: number, result: Promise<any> }> => new Promise((resolve: (v: any) => void, reject: (e: any) => void): void => {
+    const { spawn } = require('child_process');
+    const proc: any = spawn(process.execPath, [`${__dirname}/recv-thread.child.js`, mode, String(connections), String(perConnection)], { env: { ...process.env, CWS_RECV_THREAD: '1', CWS_RECV_RING_KB: '64' } });
+    let out: string = '';
+    const result: Promise<any> = new Promise((res: (v: any) => void): void => {
+      proc.on('exit', (): void => { const lines: string[] = out.trim().split('\n'); res(JSON.parse(lines[lines.length - 1])); });
+    });
+    proc.stdout.on('data', (d: Buffer): void => {
+      out += d.toString();
+      const m: RegExpExecArray | null = /READY (\d+)/.exec(out);
+      if (m) { resolve({ port: +m[1], result }); }
+    });
+    proc.stderr.on('data', (d: Buffer): void => { out += d.toString(); });
+    proc.on('error', reject);
+  });
+
+  it('Should deliver 100 connections x 200 messages in order and complete', async (): Promise<void> => {
+    const connections: number = 100, perConnection: number = 200;
+    const got: any = await new Promise((resolve: (v: any) => void, reject: (e: any) => void): void => {
+      const seen: Map<number, number[]> = new Map();
+      let finished: number = 0;
+      let statsBefore: any;
+      const wsServer: WebSocketServer = new WebSocket.Server({ port, receiveThread: true }, (): void => {
+        statsBefore = wsServer.stats;
+        for (let i: number = 0; i < connections; i++) {
+          const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: false });
+          client.on('open', (): void => {
+            for (let j: number = 0; j < perConnection; j++) {
+              const buf: Buffer = Buffer.alloc(64 + (j % 7) * 100);
+              buf.writeUInt32LE(i, 0); buf.writeUInt32LE(j, 4);
+              client.send(buf);
+            }
+          });
+          client.on('error', reject);
+        }
+      });
+      wsServer.on('connection', (ws: WebSocket): void => {
+        ws.on('message', (m: ArrayBuffer): void => {
+          const view: Buffer = Buffer.from(m);
+          const i: number = view.readUInt32LE(0), j: number = view.readUInt32LE(4);
+          if (!seen.has(i)) { seen.set(i, []); }
+          seen.get(i)!.push(j);
+          if (seen.get(i)!.length === perConnection) {
+            if (++finished === connections) { const d: any = wsServer.stats; wsServer.close((): void => resolve({ seen, stats: { workerMessages: d.recvWorkerMessages - statsBefore.recvWorkerMessages, wakes: d.recvWorkerWakes - statsBefore.recvWorkerWakes } })); }
+          }
+        });
+      });
+    });
+    expect(got.seen.size).to.equal(connections);
+    for (const [, list] of got.seen) {
+      expect(list.length).to.equal(perConnection);
+      for (let j: number = 0; j < perConnection; j++) { expect(list[j]).to.equal(j); }
+    }
+    if (recvThread() === 'active') {
+      expect(got.stats.workerMessages).to.equal(connections * perConnection);   // every message came through the worker
+    }
+  }).timeout(20000);
+
+  it('Should terminate mid-burst and let a new connection reuse the fd without seeing the old data', async (): Promise<void> => {
+    // A streams a large burst; the server terminates it on the first message, so most of the
+    // burst is still in flight in the kernel when its fd is deregistered and closed. B then
+    // connects (lowest free fd number: A's) and must receive only its own frames; A's socket
+    // object must receive nothing after terminate.
+    const got: any = await new Promise((resolve: (v: any) => void, reject: (e: any) => void): void => {
+      const result: any = { aMessages: 0, aAfterTerminate: 0, bMessages: 0, bForeign: 0, bTotal: 0 };
+      const wsServer: WebSocketServer = new WebSocket.Server({ port, receiveThread: true }, async (): Promise<void> => {
+        const a: any = await rawClient(port);
+        a.on('error', (): void => { /* reset by the terminate */ });
+        const burst: Buffer[] = [];
+        for (let i: number = 0; i < 3000; i++) { const p: Buffer = Buffer.alloc(1000, 0x41); p.writeUInt32LE(i, 4); burst.push(frame(p)); }
+        a.write(Buffer.concat(burst));
+        setTimeout(async (): Promise<void> => {
+          const b: any = await rawClient(port);
+          const frames: Buffer[] = [];
+          for (let i: number = 0; i < 500; i++) { const p: Buffer = Buffer.alloc(300, 0x42); p.writeUInt32LE(i, 4); frames.push(frame(p)); }
+          b.write(Buffer.concat(frames));
+          result.bTotal = 500;
+          setTimeout((): void => { a.destroy(); b.destroy(); wsServer.close((): void => resolve(result)); }, 300);
+        }, 30);
+      });
+      wsServer.on('connection', (ws: WebSocket): void => {
+        let tag: string | undefined;
+        let terminated: boolean = false;
+        ws.on('message', (m: ArrayBuffer): void => {
+          const view: Buffer = Buffer.from(m);
+          if (!tag) { tag = String.fromCharCode(view[0]); }
+          if (tag === 'A') {
+            if (terminated) { result.aAfterTerminate++; return; }
+            result.aMessages++;
+            terminated = true;
+            ws.terminate();
+          } else {
+            result.bMessages++;
+            if (view[0] !== 0x42 || view[299] !== 0x42 || view.length !== 300) { result.bForeign++; }
+          }
+        });
+      });
+    });
+    expect(got.aMessages).to.equal(1);
+    expect(got.aAfterTerminate).to.equal(0);
+    expect(got.bForeign).to.equal(0);
+    expect(got.bMessages).to.equal(got.bTotal);
+  }).timeout(10000);
+
+  it('Should not lose messages when the JS thread stalls for 200 ms with a 64 KB ring (child process)', async function (): Promise<void> {
+    if (process.platform === 'win32') { this.skip(); }   // the receive thread is not supported there
+    const connections: number = 4, perConnection: number = 3000;
+    const { port: p, result } = await child('slow', connections, perConnection);
+    const sockets: any[] = [];
+    for (let c: number = 0; c < connections; c++) {
+      const s: any = await rawClient(p);
+      sockets.push(s);
+      const frames: Buffer[] = [];
+      for (let i: number = 0; i < perConnection; i++) { const payload: Buffer = Buffer.alloc(512, c); payload.writeUInt32LE(i, 0); frames.push(frame(payload)); }
+      s.write(Buffer.concat(frames));
+    }
+    const r: any = await result;
+    for (const s of sockets) { s.destroy(); }
+    expect(r.timeout).to.equal(undefined);
+    expect(r.recvThread).to.equal('active');
+    expect(r.connections.length).to.equal(connections);
+    for (const c of r.connections) { expect(c.count).to.equal(perConnection); expect(c.order).to.equal(true); }
+    expect(r.stalls).to.be.greaterThan(0);   // 6 MB through a 64 KB ring while the JS thread spun: the worker had to park sockets
+  }).timeout(30000);
+
+  it('Should deliver messages larger than the ring (child process, 64 KB ring, plain and deflated)', async function (): Promise<void> {
+    if (process.platform === 'win32') { this.skip(); }
+    const { port: p, result } = await child('large', 2, 2);
+    // raw socket: a 1 MB binary frame and a 200 KB text frame, uncompressed
+    const s: any = await rawClient(p);
+    const big: Buffer = Buffer.alloc(1024 * 1024);
+    for (let i: number = 0; i < big.length; i++) { big[i] = (i * 7 + (i >> 10)) & 0xff; }
+    let sum: number = 0;
+    for (let i: number = 0; i < big.length; i += 4099) { sum = (sum + big[i]) & 0xffff; }
+    const text: Buffer = Buffer.alloc(200 * 1024, 0x61); text[text.length - 1] = 0x7a;
+    s.write(Buffer.concat([frame(big), Buffer.concat([Buffer.from([0x81, 0x80 | 127]), (() => { const b: Buffer = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(text.length)); return b; })(), Buffer.from([0, 0, 0, 0]), text])]));
+    // ws client with permessage-deflate: the same 1 MB message compressed, and 300 KB of random bytes
+    const client: WSWebSocket = new WSWebSocket(`ws://localhost:${p}`, { perMessageDeflate: true });
+    const random: Buffer = randomBytes(300 * 1024);
+    let rsum: number = 0;
+    for (let i: number = 0; i < random.length; i += 4099) { rsum = (rsum + random[i]) & 0xffff; }
+    await new Promise((resolve: () => void): void => { client.on('open', (): void => { client.send(big); client.send(random); resolve(); }); });
+    const r: any = await result;
+    s.destroy(); client.close();
+    expect(r.timeout).to.equal(undefined);
+    expect(r.recvThread).to.equal('active');
+    const all: any[] = r.connections.map((c: any) => c.sizes).flat();
+    expect(all).to.deep.include({ length: big.length, sum });
+    expect(all).to.deep.include({ text: true, length: text.length, first: 0x61, last: 0x7a });
+    expect(all).to.deep.include({ length: random.length, sum: rsum });
+    expect(all.filter((x: any) => x.length === big.length && x.sum === sum).length).to.equal(2);
+  }).timeout(30000);
 });

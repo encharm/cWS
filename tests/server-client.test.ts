@@ -876,6 +876,49 @@ describe('CWS send queue under pressure', (): void => {
     }
   });
 
+  it('Should keep binary views alive across a read and detach them after its microtask drain', async (): Promise<void> => {
+    // Two binary messages in one TCP write arrive in one read. With the per-read callback scope the
+    // first message's view is still readable while the second is handled and inside a promise
+    // continuation, and detached once the read is over; with CWS_READ_SCOPE=0 only the
+    // continuation guarantee holds (the view is detached before the next message).
+    const readScope: boolean = !['0', 'false', 'off', 'no'].includes(String(process.env.CWS_READ_SCOPE));
+    const frame = (payload: Buffer): Buffer => { const mask: Buffer = Buffer.from([1, 2, 3, 4]); return Buffer.concat([Buffer.from([0x82, 0x80 | payload.length]), mask, Buffer.from(payload.map((b: number, i: number) => b ^ mask[i & 3]))]); };
+    const result: any = await new Promise((resolve: (v: any) => void, reject: (e: any) => void): void => {
+      const wsServer: WebSocketServer = new WebSocket.Server({ port }, (): void => {
+        const socket: any = connect(port, '127.0.0.1');
+        let upgraded: boolean = false;
+        socket.on('connect', (): void => socket.write(`GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+        socket.on('data', (): void => { if (upgraded) { return; } upgraded = true; socket.write(Buffer.concat([frame(Buffer.from('first')), frame(Buffer.from('second'))])); });
+        socket.on('error', reject);
+        wsServer.on('connection', (ws: WebSocket): void => {
+          let first: ArrayBuffer | undefined; const out: any = {};
+          ws.on('message', (m: ArrayBuffer): void => {
+            if (!first) {
+              first = m;
+              Promise.resolve().then((): void => { out.inContinuation = first!.byteLength; });   // runs in the drain
+            } else {
+              out.duringSecond = first!.byteLength;
+              setImmediate((): void => { out.afterRead = first!.byteLength; socket.destroy(); wsServer.close((): void => resolve(out)); });
+            }
+          });
+        });
+      });
+    });
+    expect(result.inContinuation).to.equal(5);                        // both modes: continuation in the drain sees the bytes
+    expect(result.duringSecond).to.equal(readScope ? 5 : 0);           // read scope: still attached during the next message
+    expect(result.afterRead).to.equal(0);                              // detached once the read is over
+  });
+
+  it('Should report a throwing handler as uncaughtException and keep delivering the rest of the read', async (): Promise<void> => {
+    const { execFile } = await import('child_process');
+    const out: string = await new Promise((resolve: (v: string) => void): void => {
+      execFile(process.execPath, [`${__dirname}/read-scope-throw.child.js`], { env: process.env }, (_err: any, stdout: string): void => resolve(stdout.trim().split('\n').pop() || ''));
+    });
+    const r: any = JSON.parse(out);
+    expect(r.seen).to.deep.equal(['one', 'two', 'three']);
+    expect(r.uncaught).to.equal(1);
+  });
+
   it('Should announce server_no_context_takeover only in shared mode', async (): Promise<void> => {
     const negotiate = (pmd: any, offer: string): Promise<string> => new Promise((resolve: (v: string) => void, reject: (e: any) => void): void => {
       const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: pmd }, (): void => {

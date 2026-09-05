@@ -1,3 +1,4 @@
+#include <optional>
 #define NODE_API_DEFAULT_MODULE_API_VERSION 127
 
 #include <node.h>
@@ -189,6 +190,8 @@ struct GroupData {
   int size = 0;
 };
 
+static void installReadScope(Isolate *isolate, cS::NodeData *nodeData);
+
 template <bool isServer>
 void createGroup(const FunctionCallbackInfo<Value> &args) {
   int windowBits = args.Length() > 2 && args[2]->IsNumber() ? (int) args[2].As<Integer>()->Value() : 15;
@@ -202,6 +205,7 @@ void createGroup(const FunctionCallbackInfo<Value> &args) {
   if (level > 9) level = 9;
   cWS::Group<isServer> *group = hub.createGroup<isServer>(
       args[0].As<Integer>()->Value(), args[1].As<Integer>()->Value(), windowBits, memLevel, level);
+  installReadScope(args.GetIsolate(), (cS::NodeData *) group);
   group->setUserData(new GroupData);
   args.GetReturnValue().Set(External::New(args.GetIsolate(), group));
 }
@@ -464,6 +468,76 @@ void onConnection(const FunctionCallbackInfo<Value> &args) {
       });
 }
 
+// One node::CallbackScope per socket read. Inside it message handlers are invoked with a plain
+// Function::Call (no per-message async-context scope and microtask drain: that scaffolding was a
+// third of the receive cost for small frames), and every binary ArrayBuffer handed out during the
+// read is detached after the scope closes, i.e. after nextTick/microtasks drained, which keeps
+// the documented guarantee: a continuation resolving in the drain still sees the bytes. The
+// receive buffer is only overwritten by the next recv, so the views are valid for the whole read.
+// Delivery order of the handlers' synchronous parts is unchanged; microtasks now run per read,
+// as they do with `ws`. CWS_READ_SCOPE=0 restores the per-message MakeCallback path.
+static bool g_inRead = false;
+static std::vector<Local<ArrayBuffer>> *g_detach = nullptr;
+static std::optional<node::CallbackScope> *g_scope = nullptr;
+static Persistent<Object> g_readResource;
+static Isolate *g_readIsolate = nullptr;
+// A read carrying hundreds of tiny frames would keep all their views and objects alive until
+// its end, which measured slower than the per-message path on the EPYC (0.67 -> 0.86 us at 512
+// 64-byte frames per read). So the scope is renewed every READ_SCOPE_BATCH messages: drain,
+// detach that batch's views, open a fresh scope. Handles stay in the read's HandleScope.
+static const size_t READ_SCOPE_BATCH = 64;
+
+static void detachCollected(std::vector<Local<ArrayBuffer>> &detach) {
+  for (Local<ArrayBuffer> &ab : detach) {
+    if (ab->IsDetachable()) {
+      ab->Detach();
+    }
+  }
+  detach.clear();
+}
+
+static void renewReadScope() {
+  Isolate *isolate = g_readIsolate;
+  g_scope->reset();                                   // closes the scope: nextTick + microtasks drain here
+  detachCollected(*g_detach);
+  g_scope->emplace(isolate, Local<Object>::New(isolate, g_readResource), node::async_context{0, 0});
+}
+
+static cS::Socket *readScope(cS::Socket *s, char *data, size_t length, cS::Socket *(*inner)(cS::Socket *, char *, size_t)) {
+  Isolate *isolate = g_readIsolate;
+  HandleScope hs(isolate);
+  std::vector<Local<ArrayBuffer>> detach;
+  detach.reserve(READ_SCOPE_BATCH);
+  std::optional<node::CallbackScope> scope;
+  scope.emplace(isolate, Local<Object>::New(isolate, g_readResource), node::async_context{0, 0});
+  g_inRead = true;
+  g_detach = &detach;
+  g_scope = &scope;
+  cS::Socket *r = inner(s, data, length);
+  g_inRead = false;
+  g_detach = nullptr;
+  g_scope = nullptr;
+  scope.reset();                                      // drain, then detach what the last batch handed out
+  detachCollected(detach);
+  return r;
+}
+
+static bool readScopeEnabledFromEnv() {
+  const char *v = getenv("CWS_READ_SCOPE");
+  return !(v && (!strcmp(v, "0") || !strcmp(v, "false") || !strcmp(v, "off") || !strcmp(v, "no")));
+}
+
+static void installReadScope(Isolate *isolate, cS::NodeData *nodeData) {
+  if (!readScopeEnabledFromEnv()) {
+    return;
+  }
+  if (g_readResource.IsEmpty()) {
+    g_readResource.Reset(isolate, Object::New(isolate));
+    g_readIsolate = isolate;
+  }
+  nodeData->readHook = readScope;
+}
+
 template <bool isServer>
 void onMessage(const FunctionCallbackInfo<Value> &args) {
   cWS::Group<isServer> *group =
@@ -480,7 +554,22 @@ void onMessage(const FunctionCallbackInfo<Value> &args) {
     if(length == 1 && message[0] == 65) {
       // emit pong event if we get pong from the client
       group->pongHandler(webSocket, nullptr, 0);
+    } else if (g_inRead) {
+      // inside the read's CallbackScope: plain call, handles live in the read's HandleScope,
+      // binary views are detached once the read (and its microtask drain) is over
+      ((cS::NodeData *) group)->sendStats->messagesIn.fetch_add(1, std::memory_order_relaxed);
+      Local<Value> argv[] = {wrapMessage(message, length, opCode, isolate),
+                            getDataV8(webSocket, isolate)};
+      Local<Context> context = isolate->GetCurrentContext();
+      (void) Local<Function>::New(isolate, *messageCallback)->Call(context, context->Global(), 2, argv);
+      if (opCode == cWS::OpCode::BINARY) {
+        g_detach->push_back(argv[0].template As<ArrayBuffer>());
+      }
+      if (g_detach->size() >= READ_SCOPE_BATCH) {
+        renewReadScope();
+      }
     } else {
+      ((cS::NodeData *) group)->sendStats->messagesIn.fetch_add(1, std::memory_order_relaxed);
       HandleScope hs(isolate);
       Local<Value> argv[] = {wrapMessage(message, length, opCode, isolate),
                             getDataV8(webSocket, isolate)};
@@ -663,6 +752,8 @@ void getStats(const FunctionCallbackInfo<Value> &args) {
   set("workerOps", nodeData->sendStats->workerOps.load(std::memory_order_relaxed));
   set("workerFull", nodeData->sendStats->workerFull.load(std::memory_order_relaxed));
   set("completionWakes", nodeData->sendStats->completionWakes.load(std::memory_order_relaxed));
+  set("reads", nodeData->sendStats->reads.load(std::memory_order_relaxed));
+  set("messagesIn", nodeData->sendStats->messagesIn.load(std::memory_order_relaxed));
   args.GetReturnValue().Set(stats);
 }
 

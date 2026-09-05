@@ -179,6 +179,8 @@ export class WebSocketServer {
     // to the JS thread — completionWakes/workerOps well below 1 means the loop drained them in
     // its hooks without a syscall).
     compressNanos: number, compressCalls: number, workerOps: number, workerFull: number, completionWakes: number,
+    // inbound: socket reads and messages delivered; messagesIn/reads is how many frames a read carries on average
+    reads: number, messagesIn: number,
   } {
     return native.server.group.getStats(this.serverGroup);
   }

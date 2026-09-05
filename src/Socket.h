@@ -336,7 +336,7 @@ protected:
                     break;
                 } else {
                     // Warning: onData can delete the socket! Happens when HttpSocket upgrades
-                    socket = STATE::onData((Socket *) p, socket->nodeData->recvBuffer, length);
+                    socket = deliverRead<STATE>((Socket *) p, socket->nodeData, socket->nodeData->recvBuffer, length);
                     if (socket->isClosed() || socket->isShuttingDown()) {
                         return;
                     }
@@ -401,12 +401,22 @@ protected:
         if (events & UV_READABLE) {
             int length = (int) recv(socket->getFd(), nodeData->recvBuffer, nodeData->recvLength, 0);
             if (length > 0) {
-                STATE::onData((Socket *) p, nodeData->recvBuffer, length);
-            } else if (length <= 0 || (length == SOCKET_ERROR && !netContext->wouldBlock())) {
+                deliverRead<STATE>((Socket *) p, nodeData, nodeData->recvBuffer, length);
+            } else if (length == 0 || (length == SOCKET_ERROR && !netContext->wouldBlock())) {
+                // 0 is EOF; -1 with EAGAIN is a spurious wakeup, not an end
                 STATE::onEnd((Socket *) p);
             }
         }
 
+    }
+
+    template<class STATE>
+    static Socket *deliverRead(Socket *s, NodeData *nodeData, char *data, size_t length) {
+        nodeData->sendStats->reads.fetch_add(1, std::memory_order_relaxed);
+        if (nodeData->readHook) {
+            return nodeData->readHook(s, data, length, &STATE::onData);
+        }
+        return STATE::onData(s, data, length);
     }
 
     template<class STATE>

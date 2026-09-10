@@ -477,10 +477,15 @@ protected:
         const char *base = ((const char *) slab) + sizeof(Queue::Message);
         return (size_t) ((base + slabCapacity()) - (slab->data + slab->length));
     }
-    // The slab at the queue tail if `bytes` fit, else a fresh one appended to the queue.
+    // The slab at the queue tail if `bytes` fit, else a fresh one appended to the queue;
+    // nullptr when `bytes` cannot fit in a slab at all, so the caller must allocate its own
+    // message (writing more than slabCapacity() into a slab overflowed the pool block).
     // Only the main thread touches the tail, and a message in a worker op is never the
     // tail (submitToWorker unlinks it), so appending never races the worker.
     Queue::Message *slabWithSpace(size_t bytes) {
+        if (bytes > slabCapacity()) {
+            return nullptr;
+        }
         Queue::Message *tail = messageQueue.tail;
         if (tail && tail->run && slabSpaceLeft(tail) >= bytes) {
             return tail;

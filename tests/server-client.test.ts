@@ -919,6 +919,28 @@ describe('CWS send queue under pressure', (): void => {
     expect(r.uncaught).to.equal(1);
   });
 
+  it('Should send a prepared message with a prefix larger than the block pool\'s largest size class', async (): Promise<void> => {
+    // The history-sync entry sendShared queues on a takeover connection is sized
+    // sizeof(Message) + prefixLength + 1. That used to index the per-size-class freelists
+    // directly, so a prefix over ~16 KB ran off the end of the array and crashed in
+    // Queue::release when the send completed (SIGSEGV in production on 4.14.0).
+    for (const prefixLength of [16271, 16272, 20000, 70000]) {
+      const payload: Buffer = Buffer.from(JSON.stringify({ items: Array.from({ length: 40 }, (_: unknown, i: number) => ({ id: `jam${i}`, users: i })) }));
+      const prefix: Buffer = Buffer.alloc(prefixLength, 0x41);
+      const prepared: PreparedMessage = new PreparedMessage(payload);
+      const got: Buffer = await new Promise((resolve: (v: Buffer) => void, reject: (e: any) => void): void => {
+        const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { serverNoContextTakeover: false, level: 1, threshold: 0 } }, (): void => {
+          const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: true });
+          client.on('message', (data: Buffer): void => { client.close(); wsServer.close((): void => resolve(Buffer.from(data))); });
+          client.on('error', reject);
+        });
+        wsServer.on('connection', (ws: WebSocket): void => { ws.send(prepared, { prefix }); });
+      });
+      expect(got.length).to.equal(prefixLength + payload.length, `prefix ${prefixLength}`);
+      expect(got.subarray(prefixLength).equals(payload)).to.equal(true, `payload after prefix ${prefixLength}`);
+    }
+  });
+
   it('Should announce server_no_context_takeover only in shared mode', async (): Promise<void> => {
     const negotiate = (pmd: any, offer: string): Promise<string> => new Promise((resolve: (v: string) => void, reject: (e: any) => void): void => {
       const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: pmd }, (): void => {

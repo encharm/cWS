@@ -196,8 +196,23 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
     // callback fires on the message's completion as before.
     const size_t INLINE_BODY_MAX = 4096;
     bool inlineBody = corked && !callback && bodyLength <= INLINE_BODY_MAX;
-    Queue::Message *first = corked ? slabWithSpace(MAX_HEADER + prefixPart + (inlineBody ? bodyLength : 0)) : allocMessage(MAX_HEADER + prefixPart);
-    char *dst = (char *) first->data + (corked ? first->length : 0);
+    // A header + prefix larger than a slab gets its own message appended to the queue instead:
+    // writing it into a slab overflowed the 16 KB pool block and corrupted the heap (the
+    // crash on 4.14.0..4.17.0 with an rpc prefix over ~16 KB). slabWithSpace returns nullptr
+    // rather than a slab that is too small; `ownSlab` then means "corked, but not in a slab",
+    // so the frame is still queued and flushed in order with everything else on this socket.
+    Queue::Message *first = corked ? slabWithSpace(MAX_HEADER + prefixPart + (inlineBody ? bodyLength : 0)) : nullptr;
+    bool ownSlab = false;
+    if (corked && !first) {
+        inlineBody = false;
+        ownSlab = true;
+        first = allocMessage(MAX_HEADER + prefixPart);
+        first->length = 0;
+    } else if (!corked) {
+        first = allocMessage(MAX_HEADER + prefixPart);
+    }
+    bool inSlab = corked && !ownSlab;
+    char *dst = (char *) first->data + (inSlab ? first->length : 0);
     char *p = dst + WebSocketProtocol<isServer, WebSocket<isServer>>::formatMessage(dst, dst, 0, opCode, prefixPart + bodyLength, deflate);
     if (deflate) {
         const char *src = prefix;
@@ -221,11 +236,14 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
         memcpy(p, body, bodyLength);
         p += bodyLength;
     }
-    if (corked) {
+    if (inSlab) {
         first->length += (size_t) (p - dst);
         messageQueue.totalLength += (size_t) (p - dst);
     } else {
         first->length = (size_t) (p - dst);
+        if (ownSlab) {
+            enqueue(first);   // corked, but its own message: queue it in order
+        }
     }
     nodeData->sendStats->wireBytes.fetch_add((size_t) (p - dst) + (inlineBody ? 0 : bodyLength), std::memory_order_relaxed);
     if (historySync && !cS::SendWorker::active()) {
@@ -235,8 +253,8 @@ void WebSocket<isServer>::sendShared(const char *prefix, size_t prefixLength, Sh
         zlib::appendHistory((zlib::Stream *) slidingDeflateWindow, payload->raw.data(), payload->raw.size());
     } else if (historySync) {
         // prefix copy + payload reference, appended to the window in queue order by the worker
-        int syncIndex = nodeData->getMemoryBlockIndex((int) (sizeof(Queue::Message) + prefixLength + 1));
-        Queue::Message *sync = (Queue::Message *) nodeData->getSmallMemoryBlock(syncIndex);
+        int syncIndex;
+        Queue::Message *sync = (Queue::Message *) nodeData->getMemoryBlock(sizeof(Queue::Message) + prefixLength + 1, syncIndex);
         sync->data = ((char *) sync) + sizeof(Queue::Message);
         memcpy((char *) sync->data, prefix, prefixLength);
         sync->length = prefixLength;

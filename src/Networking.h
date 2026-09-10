@@ -268,11 +268,22 @@ struct WIN32_EXPORT NodeData {
     };
     CorkState *corkState = nullptr;
 
+    // Size class for `length` bytes, or -1 when it is beyond the pooled classes: the caller
+    // must then allocate and free with new[]/delete[] (Queue::Message::poolIndex = -1 does
+    // exactly that). Callers used to be trusted to check the size themselves against
+    // preAllocMaxSize; the history-sync entry in sendShared did not, and a prefix over
+    // ~16 KB indexed free[] out of bounds and crashed in Queue::release (4.14.0..4.17.0).
     static int getMemoryBlockIndex(size_t length) {
+        if (length > (size_t) preAllocMaxSize) {
+            return -1;
+        }
         return (int) ((length >> 4) + bool(length & 15));
     }
 
     char *getSmallMemoryBlock(int index) {
+        if (index < 0) {
+            return nullptr;   // not a pooled size class; getMemoryBlock(length) allocates instead
+        }
         std::vector<char *> &blocks = pool->free[index];
         if (!blocks.empty()) {
             char *memory = blocks.back();
@@ -282,7 +293,18 @@ struct WIN32_EXPORT NodeData {
         return new char[index << 4];
     }
 
+    // Block of `length` bytes from the pool when it has a size class for it, otherwise from the
+    // heap; `index` is what to pass to freeSmallMemoryBlock (or -1, meaning delete[]).
+    char *getMemoryBlock(size_t length, int &index) {
+        index = getMemoryBlockIndex(length);
+        return index < 0 ? new char[length] : getSmallMemoryBlock(index);
+    }
+
     void freeSmallMemoryBlock(char *memory, int index) {
+        if (index < 0) {
+            delete [] memory;
+            return;
+        }
         std::vector<char *> &blocks = pool->free[index];
         if (blocks.size() < poolCap) {
             blocks.push_back(memory);

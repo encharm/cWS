@@ -1032,6 +1032,85 @@ describe('CWS send queue under pressure', (): void => {
     expect(got).to.deep.equal([0, 0, 5]);
   });
 
+  it('Should deliver every payload shape and size byte-exact across all framing paths', async function (): Promise<void> {
+    // Which code frames a send depends on cork x send worker x compression mode: with both on
+    // the worker deflates and frames (sizing from the deflated length), with either off the JS
+    // thread does it through WebSocketTransformer::estimate, and the takeover modes add a
+    // per-socket window (microdeflate at level 1, zlib-ng at level 2). A test that fixes those
+    // exercises one path and proves nothing about the others - which is how three earlier
+    // regression tests passed against unpatched code. This sweeps the matrix with payload
+    // sizes on every internal boundary and shapes that make deflate shrink AND expand.
+    if (process.platform === 'win32') { this.skip(); }
+    const { execFile } = await import('child_process');
+    let offset: number = 10;
+    for (const mode of ['off', 'shared', 'takeover1', 'takeover2']) {
+      for (const flags of [{}, { CWS_SEND_THREAD: '0' }, { CWS_CORK: '0' }, { CWS_RECV_THREAD: '1' }, { SLOW: '1' }]) {
+        const label: string = `${mode} ${JSON.stringify(flags)}`;
+        const result: any = await new Promise((resolve: (v: any) => void): void => {
+          execFile(process.execPath, [`${__dirname}/matrix.child.js`],
+            { env: { ...process.env, ...flags, MODE: mode, PORT_OFFSET: String(offset++) } },
+            (err: any, stdout: string, stderr: string): void => resolve({ code: err ? err.code : 0, stdout: stdout.trim(), stderr }));
+        });
+        expect(result.stderr).to.not.contain('FATAL', `${label}: ${result.stderr.split('\n')[0]}`);
+        const line: string = result.stdout.split('\n').filter((l: string) => l.startsWith('{')).pop() || '{}';
+        const parsed: any = JSON.parse(line);
+        expect(parsed.ok, `${label}: ${line}`).to.equal(true);
+        expect(result.code, label).to.equal(0);
+      }
+    }
+  }).timeout(300000);
+
+  it('Should survive close, terminate and backpressure racing compressed sends', async function (): Promise<void> {
+    // The fd-lifetime and ownership rules (orphaned send ops, the takeover window handed to the
+    // op, prepared payload refcounts, the receive worker's deregistration ack) are only
+    // exercised when a socket dies with frames in flight, in the worker's scratch arena, or
+    // queued behind a stalled write. Each case runs in a child process so a crash is a failure
+    // rather than a hung suite, and both takeover modes are covered because the window changes
+    // what the op owns.
+    if (process.platform === 'win32') { this.skip(); }
+    const { execFile } = await import('child_process');
+    const cases: string[] = ['close-after-burst', 'terminate-mid-burst', 'slow-then-close', 'send-after-close', 'prepared-outlives-socket', 'ping-storm-while-sending'];
+    let offset: number = 40;
+    for (const kase of cases) {
+      for (const flags of [{ TAKEOVER: '1', LEVEL: '1' }, { TAKEOVER: '1', LEVEL: '2' }, { TAKEOVER: '0', CWS_SEND_THREAD: '0' }, { TAKEOVER: '1', CWS_RECV_THREAD: '1' }]) {
+        const label: string = `${kase} ${JSON.stringify(flags)}`;
+        const result: any = await new Promise((resolve: (v: any) => void): void => {
+          execFile(process.execPath, [`${__dirname}/lifecycle.child.js`],
+            { env: { ...process.env, ...flags, CASE: kase, PORT_OFFSET: String(offset++) } },
+            (err: any, stdout: string, stderr: string): void => resolve({ code: err ? err.code : 0, stdout: stdout.trim(), stderr }));
+        });
+        expect(result.stderr).to.not.contain('FATAL', `${label}: ${result.stderr.split('\n')[0]}`);
+        const line: string = result.stdout.split('\n').filter((l: string) => l.startsWith('{')).pop() || '{}';
+        expect(JSON.parse(line).ok, `${label}: ${line} (exit ${result.code})`).to.equal(true);
+      }
+    }
+  }).timeout(300000);
+
+  it('Should keep the deflate window in step through mixed compressed, plain, prepared and empty sends', async function (): Promise<void> {
+    // A context-takeover window is stateful: every message the client inflates must be fed the
+    // same history the server compressed against. Prepared messages deliberately break that
+    // pattern (independently compressed, spliced behind a prefix, with a history-sync entry
+    // appending the raw bytes), and uncompressed and empty frames interleave with it. A desync
+    // is silent server-side and shows up as garbage or a dropped connection, so this asserts on
+    // 300 decoded messages per compressor rather than on survival.
+    if (process.platform === 'win32') { this.skip(); }
+    const { execFile } = await import('child_process');
+    let offset: number = 60;
+    for (const level of ['1', '2']) {
+      for (const flags of [{}, { CWS_SEND_THREAD: '0' }, { THRESHOLD: '128' }]) {
+        const label: string = `level ${level} ${JSON.stringify(flags)}`;
+        const result: any = await new Promise((resolve: (v: any) => void): void => {
+          execFile(process.execPath, [`${__dirname}/compression-state.child.js`],
+            { env: { ...process.env, ...flags, LEVEL: level, PORT_OFFSET: String(offset++) } },
+            (err: any, stdout: string, stderr: string): void => resolve({ code: err ? err.code : 0, stdout: stdout.trim(), stderr }));
+        });
+        expect(result.stderr).to.not.contain('FATAL', `${label}: ${result.stderr.split('\n')[0]}`);
+        const line: string = result.stdout.split('\n').filter((l: string) => l.startsWith('{')).pop() || '{}';
+        expect(JSON.parse(line).ok, `${label}: ${line}`).to.equal(true);
+      }
+    }
+  }).timeout(240000);
+
   it('Should announce server_no_context_takeover only in shared mode', async (): Promise<void> => {
     const negotiate = (pmd: any, offer: string): Promise<string> => new Promise((resolve: (v: string) => void, reject: (e: any) => void): void => {
       const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: pmd }, (): void => {

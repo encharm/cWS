@@ -307,6 +307,13 @@ static void deflateAndFrame(Socket::Queue::Message *m, cWS::zlib::Stream *stream
         frame = new char[need];
     }
     size_t frameLength = cWS::WebSocketProtocol<true, cWS::WebSocket<true>>::formatMessage(frame, deflated, compressedLength, (cWS::OpCode) m->opCode, compressedLength, true);
+    // `need` was computed from the deflated length (zlib::deflate updates it in place); if the
+    // framed size ever exceeds it we have written past the arena or the heap frame.
+    if (frameLength > need) {
+        fprintf(stderr, "cWS: FATAL: deflateAndFrame framed %zu bytes into a %zu byte buffer (heap overflow)\n", frameLength, need);
+        fflush(stderr);
+        abort();
+    }
     if (op) {
         op->scratchUsed += frameLength;
         m->inScratch = true;

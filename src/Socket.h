@@ -3,6 +3,8 @@
 
 #include "Networking.h"
 #include "SendWorker.h"
+#include <cstdio>
+#include <cstdlib>
 #include "RecvWorker.h"
 #include "Zlib.h"
 #include <vector>
@@ -596,6 +598,21 @@ protected:
         return true;
     }
 
+    // T::transform writes a framed (possibly compressed) message into a buffer sized by
+    // T::estimate. Compression can expand, so getting that bound wrong is a heap overflow
+    // that corrupts memory silently and crashes somewhere unrelated later (it did: see the
+    // 4.17.2 notes). The write has already happened by the time we can check, so this is a
+    // last-resort detector, not a guard: it turns a silent corruption into an immediate,
+    // identifiable abort, and it is what the regression tests assert on.
+    static void checkFrameFits(size_t written, size_t promised, const char *where) {
+        if (written > promised) {
+            fprintf(stderr, "cWS: FATAL: %s framed %zu bytes into a %zu byte buffer (heap overflow); "
+                            "T::estimate is too small for this payload\n", where, written, promised);
+            fflush(stderr);
+            abort();
+        }
+    }
+
     template <class T, class D>
     void sendTransformed(const char *message, size_t length, void(*callback)(void *socket, void *data, bool cancelled, void *reserved), void *callbackData, D transformData) {
         size_t estimatedLength = T::estimate(message, length) + sizeof(Queue::Message);
@@ -612,6 +629,7 @@ protected:
             if (!callback && frameLength <= slabCapacity()) {
                 messagePtr = slabWithSpace(frameLength);
                 size_t n = T::transform(message, (char *) messagePtr->data + messagePtr->length, length, transformData);
+                checkFrameFits(n, frameLength, "sendTransformed (slab)");
                 messagePtr->length += n;
                 messageQueue.totalLength += n;
             } else {
@@ -631,6 +649,7 @@ protected:
                     messagePtr = allocMessage(estimatedLength - sizeof(Queue::Message));
                 }
                 messagePtr->length = T::transform(message, (char *) messagePtr->data, length, transformData);
+                checkFrameFits(messagePtr->length, estimatedLength - sizeof(Queue::Message), "sendTransformed (corked)");
                 messagePtr->nextMessage = nullptr;
                 messagePtr->callback = callback;
                 messagePtr->callbackData = callbackData;
@@ -652,6 +671,7 @@ protected:
                 Queue::Message *messagePtr = (Queue::Message *) nodeData->getSmallMemoryBlock(memoryIndex);
                 messagePtr->data = ((char *) messagePtr) + sizeof(Queue::Message);
                 messagePtr->length = T::transform(message, (char *) messagePtr->data, length, transformData);
+                checkFrameFits(messagePtr->length, (size_t) memoryLength - sizeof(Queue::Message), "sendTransformed (pooled)");
                 messagePtr->nextMessage = nullptr;
                 messagePtr->reserved = nullptr;
                 messagePtr->poolIndex = memoryIndex;
@@ -683,6 +703,7 @@ protected:
             } else {
                 Queue::Message *messagePtr = allocMessage(estimatedLength - sizeof(Queue::Message));
                 messagePtr->length = T::transform(message, (char *) messagePtr->data, length, transformData);
+                checkFrameFits(messagePtr->length, estimatedLength - sizeof(Queue::Message), "sendTransformed (heap)");
 
                 bool wasTransferred;
                 if (write(messagePtr, wasTransferred)) {

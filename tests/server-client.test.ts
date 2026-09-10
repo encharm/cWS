@@ -970,6 +970,9 @@ describe('CWS send queue under pressure', (): void => {
   }).timeout(30000);
 
   it('Should deliver an incompressible message larger than 64 KB (compression can expand)', async (): Promise<void> => {
+    // estimate() is used when the frame is built on the JS thread: send worker off, corking
+    // off, or TLS. With the worker on, deflateAndFrame sizes the buffer from the deflated
+    // length instead. The child process below covers those modes; here we check delivery.
     // estimate() sized the frame buffer as length + header, but deflate can EXPAND: an
     // incompressible payload falls back to stored blocks and the header grows past 65535,
     // which overflowed the message buffer (heap-buffer-overflow write, 4.14.0..4.17.1).
@@ -987,13 +990,35 @@ describe('CWS send queue under pressure', (): void => {
     }
   });
 
+  it('Should not overflow the frame buffer when compression expands (JS-thread framing)', async function (): Promise<void> {
+    // The frame is sized by WebSocketTransformer::estimate only when it is built on the JS
+    // thread: with the send worker off, with corking off, and on TLS. cWS aborts with a
+    // "FATAL: ... framed N bytes into a M byte buffer" line if estimate is too small, so a
+    // clean exit here is the assertion. Incompressible payloads across the 64 KB boundary,
+    // where the deflated output grows past the payload and the frame header grows to 10 bytes.
+    if (process.platform === 'win32') { this.skip(); }
+    const { execFile } = await import('child_process');
+    for (const env of [{ CWS_SEND_THREAD: '0' }, { CWS_CORK: '0' }]) {
+      for (const size of ['65530', '70000', '200000']) {
+        const result: any = await new Promise((resolve: (v: any) => void): void => {
+          execFile(process.execPath, [`${__dirname}/estimate-overflow.child.js`],
+            { env: { ...process.env, ...env, SIZE: size } },
+            (err: any, stdout: string, stderr: string): void => resolve({ code: err ? err.code : 0, stdout: stdout.trim(), stderr }));
+        });
+        expect(result.stderr).to.not.contain('FATAL', `${JSON.stringify(env)} size ${size}: ${result.stderr.split('\n')[0]}`);
+        expect(result.code).to.equal(0, `${JSON.stringify(env)} size ${size}`);
+        expect(JSON.parse(result.stdout.split('\n').pop()!).ok).to.equal(true, `${JSON.stringify(env)} size ${size}`);
+      }
+    }
+  }).timeout(60000);
+
   it('Should send two consecutive empty compressed messages', async (): Promise<void> => {
     // A redundant flush produces fewer than the 4 tail bytes; `length = produced - 4` then
     // underflowed to a huge size_t (memcpy with (size_t)-4) and the frame went out with an
     // empty, invalid DEFLATE payload that made clients drop the connection.
     const got: number[] = await new Promise((resolve: (v: number[]) => void, reject: (e: any) => void): void => {
       const lengths: number[] = [];
-      const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { threshold: 0, level: 2 } }, (): void => {
+      const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { serverNoContextTakeover: false, level: 2, threshold: 0 } }, (): void => {
         const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: true });
         client.on('message', (data: Buffer): void => {
           lengths.push(data.length);
@@ -1002,7 +1027,7 @@ describe('CWS send queue under pressure', (): void => {
         client.on('error', reject);
         client.on('close', (code: number): void => { if (lengths.length < 3) { reject(new Error(`client closed early with ${code}`)); } });
       });
-      wsServer.on('connection', (ws: WebSocket): void => { ws.send(Buffer.alloc(0)); ws.send(Buffer.alloc(0)); ws.send(Buffer.from('after')); });
+      wsServer.on('connection', (ws: WebSocket): void => { ws.send(Buffer.alloc(0), { compress: true }); ws.send(Buffer.alloc(0), { compress: true }); ws.send(Buffer.from('after'), { compress: true }); });
     });
     expect(got).to.deep.equal([0, 0, 5]);
   });

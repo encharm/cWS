@@ -941,6 +941,34 @@ describe('CWS send queue under pressure', (): void => {
     }
   });
 
+  it('Should deliver large compressed messages to a trickling reader (partial writes of a scratch frame)', async (): Promise<void> => {
+    // The send worker deflates into a per-op scratch arena; a frame that is only partly sent is
+    // copied to the heap by unscratch, and each further partial write advances `data`. Freeing
+    // `data` rather than the base of that copy freed an interior pointer and corrupted the heap
+    // (4.14.0..4.17.1). Needs frames far larger than one write and a reader that drains slowly.
+    const count: number = 6;
+    const payloads: Buffer[] = [];
+    for (let i: number = 0; i < count; i++) { payloads.push(randomBytes(700 * 1024)); }   // incompressible: stays large
+    const got: Buffer[] = await new Promise((resolve: (v: Buffer[]) => void, reject: (e: any) => void): void => {
+      const received: Buffer[] = [];
+      const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { threshold: 0 } }, (): void => {
+        const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: true });
+        client.on('open', (): void => {
+          // trickle: pause and resume repeatedly so the server writes each frame in many pieces
+          const tick = (): void => { client.pause(); setTimeout((): void => { client.resume(); if (received.length < count) { setTimeout(tick, 5); } }, 5); };
+          tick();
+        });
+        client.on('message', (data: Buffer): void => {
+          received.push(Buffer.from(data));
+          if (received.length === count) { client.close(); wsServer.close((): void => resolve(received)); }
+        });
+        client.on('error', reject);
+      });
+      wsServer.on('connection', (ws: WebSocket): void => { for (const p of payloads) { ws.send(p); } });
+    });
+    for (let i: number = 0; i < count; i++) { expect(got[i].equals(payloads[i])).to.equal(true, `message ${i}`); }
+  }).timeout(30000);
+
   it('Should deliver an incompressible message larger than 64 KB (compression can expand)', async (): Promise<void> => {
     // estimate() sized the frame buffer as length + header, but deflate can EXPAND: an
     // incompressible payload falls back to stored blocks and the header grows past 65535,

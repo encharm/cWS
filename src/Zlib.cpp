@@ -131,11 +131,22 @@ char *deflate(Stream *stream, char *data, size_t &length, char *buffer, size_t b
 
     if (dynamic.length()) {
         dynamic.append(buffer, bufferSize - zs.avail_out);
-        length = dynamic.length() - 4;
+        length = dynamic.length() > 4 ? dynamic.length() - 4 : 0;
         return (char *) dynamic.data();
     }
 
-    length = bufferSize - zs.avail_out - 4;
+    // A redundant flush (an empty message right after another flush) produces fewer than the
+    // 4 tail bytes -- zlib-ng returns Z_BUF_ERROR having written nothing -- and the
+    // subtraction then underflowed to a huge size_t that reached memcpy in formatMessage.
+    // An empty payload is also not a valid DEFLATE stream for the peer's inflater, so emit
+    // the one-byte empty non-compressed block that RFC 7692 section 7.2.3.6 prescribes.
+    size_t produced = bufferSize - zs.avail_out;
+    if (produced <= 4) {
+        buffer[0] = 0x00;
+        length = 1;
+        return buffer;
+    }
+    length = produced - 4;
     return buffer;
 }
 

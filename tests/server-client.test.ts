@@ -941,6 +941,44 @@ describe('CWS send queue under pressure', (): void => {
     }
   });
 
+  it('Should deliver an incompressible message larger than 64 KB (compression can expand)', async (): Promise<void> => {
+    // estimate() sized the frame buffer as length + header, but deflate can EXPAND: an
+    // incompressible payload falls back to stored blocks and the header grows past 65535,
+    // which overflowed the message buffer (heap-buffer-overflow write, 4.14.0..4.17.1).
+    for (const size of [65528, 65530, 65536, 200000]) {
+      const payload: Buffer = randomBytes(size);   // random: incompressible, so deflate expands it
+      const got: Buffer = await new Promise((resolve: (v: Buffer) => void, reject: (e: any) => void): void => {
+        const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { threshold: 0 } }, (): void => {
+          const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: true });
+          client.on('message', (data: Buffer): void => { client.close(); wsServer.close((): void => resolve(Buffer.from(data))); });
+          client.on('error', reject);
+        });
+        wsServer.on('connection', (ws: WebSocket): void => ws.send(payload));
+      });
+      expect(got.equals(payload)).to.equal(true, `size ${size}`);
+    }
+  });
+
+  it('Should send two consecutive empty compressed messages', async (): Promise<void> => {
+    // A redundant flush produces fewer than the 4 tail bytes; `length = produced - 4` then
+    // underflowed to a huge size_t (memcpy with (size_t)-4) and the frame went out with an
+    // empty, invalid DEFLATE payload that made clients drop the connection.
+    const got: number[] = await new Promise((resolve: (v: number[]) => void, reject: (e: any) => void): void => {
+      const lengths: number[] = [];
+      const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: { threshold: 0, level: 2 } }, (): void => {
+        const client: WSWebSocket = new WSWebSocket(`ws://localhost:${port}`, { perMessageDeflate: true });
+        client.on('message', (data: Buffer): void => {
+          lengths.push(data.length);
+          if (lengths.length === 3) { client.close(); wsServer.close((): void => resolve(lengths)); }
+        });
+        client.on('error', reject);
+        client.on('close', (code: number): void => { if (lengths.length < 3) { reject(new Error(`client closed early with ${code}`)); } });
+      });
+      wsServer.on('connection', (ws: WebSocket): void => { ws.send(Buffer.alloc(0)); ws.send(Buffer.alloc(0)); ws.send(Buffer.from('after')); });
+    });
+    expect(got).to.deep.equal([0, 0, 5]);
+  });
+
   it('Should announce server_no_context_takeover only in shared mode', async (): Promise<void> => {
     const negotiate = (pmd: any, offer: string): Promise<string> => new Promise((resolve: (v: string) => void, reject: (e: any) => void): void => {
       const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: pmd }, (): void => {

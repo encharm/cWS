@@ -312,6 +312,7 @@ static void deflateAndFrame(Socket::Queue::Message *m, cWS::zlib::Stream *stream
         m->inScratch = true;
     } else {
         m->ownsData = true;
+        m->ownedBase = frame;
     }
     m->data = frame;
     m->length = frameLength;
@@ -343,6 +344,7 @@ void Socket::unscratch(SendOp *op) {
             memcpy(copy, m->data, m->length);
             m->data = copy;
             m->ownsData = true;
+            m->ownedBase = copy;
             m->inScratch = false;
         }
     }

@@ -51,7 +51,16 @@ void WebSocket<isServer>::send(const char *message, size_t length, OpCode opCode
 
     struct WebSocketTransformer {
         static size_t estimate(const char *data, size_t length) {
-            return length + HEADER_LENGTH;
+            // Compression can EXPAND: an incompressible payload falls back to DEFLATE stored
+            // blocks and the framing header grows from 4 to 10 bytes once the deflated length
+            // passes 65535, so length + HEADER_LENGTH overflowed the message buffer.
+            // Bound covering both backends: zlib/zlib-ng deflateBound for raw deflate
+            // (length + length/4096 + length/16384 + length/33554432 + 13) and microdeflate's
+            // stored-block fallback (5 bytes per 65535-byte block plus a terminator); the
+            // larger of the two, plus the largest frame header.
+            size_t zlibBound = length + (length >> 12) + (length >> 14) + (length >> 25) + 13;
+            size_t storedBound = length + 5 * (length / 65535 + 1) + 1;
+            return (zlibBound > storedBound ? zlibBound : storedBound) + HEADER_LENGTH;
         }
 
         static size_t transform(const char *src, char *dst, size_t length, TransformData transformData) {

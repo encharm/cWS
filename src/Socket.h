@@ -62,6 +62,9 @@ public:
             int poolIndex = -1;
             // data lives in its own new[] buffer (not inside this block); freed with delete[].
             bool ownsData = false;
+            // Base of the ownsData allocation: `data` is advanced past what has been sent
+            // on a partial write, so freeing `data` would free an interior pointer.
+            const char *ownedBase = nullptr;
             // data is a raw, unframed payload still to be deflated and framed (by the send
             // worker, or by materializeCb if a main-thread write path reaches it first).
             bool compressPending = false;
@@ -92,7 +95,7 @@ public:
 
         static void release(NodeData *nodeData, Message *message) {
             if (message->ownsData) {
-                delete [] (char *) message->data;
+                delete [] (char *) message->ownedBase;
             }
             if (message->rawOwned) {
                 delete [] (char *) message->rawOwned;

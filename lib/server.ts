@@ -181,6 +181,8 @@ export class WebSocketServer {
     compressNanos: number, compressCalls: number, workerOps: number, workerFull: number, completionWakes: number,
     // inbound: socket reads and messages delivered; messagesIn/reads is how many frames a read carries on average
     reads: number, messagesIn: number,
+    // block pool occupancy (diagnostics): blocks parked on the freelists and the bytes they hold
+    poolFreeBlocks: number, poolFreeBytes: number,
     // receive worker (`receiveThread`): loop wakes it issued, data messages it parsed, and times a
     // connection was parked because the ring was full (the JS thread fell behind)
     recvWorkerWakes: number, recvWorkerMessages: number, recvStalls: number,

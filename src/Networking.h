@@ -300,6 +300,11 @@ struct WIN32_EXPORT NodeData {
         return index < 0 ? new char[length] : getSmallMemoryBlock(index);
     }
 
+    // Blocks parked on one size class's freelist (diagnostics: see getStats).
+    size_t poolFreeCount(int index) const {
+        return (index >= 0 && index <= (preAllocMaxSize >> 4)) ? pool->free[index].size() : 0;
+    }
+
     void freeSmallMemoryBlock(char *memory, int index) {
         if (index < 0) {
             delete [] memory;

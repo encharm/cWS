@@ -38,6 +38,8 @@ export declare class WebSocketServer {
         completionWakes: number;
         reads: number;
         messagesIn: number;
+        poolFreeBlocks: number;
+        poolFreeBytes: number;
         recvWorkerWakes: number;
         recvWorkerMessages: number;
         recvStalls: number;

@@ -787,6 +787,19 @@ void getStats(const FunctionCallbackInfo<Value> &args) {
   set("recvWorkerWakes", nodeData->sendStats->recvWorkerWakes.load(std::memory_order_relaxed));
   set("recvWorkerMessages", nodeData->sendStats->recvWorkerMessages.load(std::memory_order_relaxed));
   set("recvStalls", nodeData->sendStats->recvStalls.load(std::memory_order_relaxed));
+  // Block pool occupancy: blocks currently parked on the per-size-class freelists, and the
+  // bytes they hold. A leak shows as messages allocated but never returned here (the counts
+  // stay low while RSS climbs); allocator retention shows as high, stable counts.
+  {
+    size_t blocks = 0, bytes = 0;
+    for (int i = 0; i <= (cS::NodeData::preAllocMaxSize >> 4); i++) {
+      size_t n = nodeData->poolFreeCount(i);
+      blocks += n;
+      bytes += n * (size_t) (i << 4);
+    }
+    set("poolFreeBlocks", blocks);
+    set("poolFreeBytes", bytes);
+  }
   args.GetReturnValue().Set(stats);
 }
 

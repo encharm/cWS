@@ -1111,6 +1111,38 @@ describe('CWS send queue under pressure', (): void => {
     }
   }).timeout(240000);
 
+  it('Should not leak across connection, prepared-message, window and callback churn', async function (): Promise<void> {
+    // Leaks are invisible to every other test here: nothing crashes, nothing is wrong on the
+    // wire, memory just never comes back. Each case churns one ownership path (a native
+    // PreparedMessage handle per send, a per-socket deflate window, pending send callbacks,
+    // sockets abandoned mid-send) over many rounds of connect/send/terminate, then measures
+    // RSS minus the block pool's own parked bytes, which is what a real leak grows and
+    // allocator retention does not. The `idle` case is the control: connections only, no
+    // sends. A leak shows as a case whose slope is far above that control, so the assertion
+    // is relative rather than an absolute number that would be brittle across machines.
+    if (process.platform === 'win32') { this.skip(); }
+    const { execFile } = await import('child_process');
+    const run = async (kase: string, offset: number): Promise<number> => {
+      const result: any = await new Promise((resolve: (v: any) => void): void => {
+        execFile(process.execPath, ['--expose-gc', `${__dirname}/leak2.child.js`],
+          { env: { ...process.env, CASE: kase, MODE: 'takeover', ROUNDS: '60', PORT_OFFSET: String(offset) } },
+          (err: any, stdout: string): void => resolve({ code: err ? err.code : 0, stdout: stdout.trim() }));
+      });
+      const line: string = result.stdout.split('\n').filter((l: string) => l.startsWith('{')).pop() || '{}';
+      const parsed: any = JSON.parse(line);
+      expect(parsed.error, `${kase}: ${line}`).to.equal(undefined);
+      expect(parsed.timeout, `${kase}: timed out`).to.equal(undefined);
+      return parsed.netSlopeKBPerRound;
+    };
+    const control: number = await run('idle', 80);
+    for (const kase of ['prepared-per-message', 'prepared-abandoned', 'window-churn', 'callback-abandoned']) {
+      const slope: number = await run(kase, 81 + ['prepared-per-message', 'prepared-abandoned', 'window-churn', 'callback-abandoned'].indexOf(kase));
+      // generous: a real leak here (a native handle or window per message) would be orders of
+      // magnitude above the control, not a small multiple of it
+      expect(slope, `${kase} grew ${slope} KB/round vs control ${control} KB/round`).to.be.lessThan(Math.max(control * 6, 300));
+    }
+  }).timeout(600000);
+
   it('Should announce server_no_context_takeover only in shared mode', async (): Promise<void> => {
     const negotiate = (pmd: any, offer: string): Promise<string> => new Promise((resolve: (v: string) => void, reject: (e: any) => void): void => {
       const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: pmd }, (): void => {

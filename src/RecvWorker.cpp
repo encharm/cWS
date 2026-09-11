@@ -148,6 +148,15 @@ struct Worker {
     alignas(64) std::atomic<bool> needResume{false};   // worker: waiting for ring space
     alignas(64) std::atomic<bool> loopIdle{false};     // main: about to block in poll
     alignas(64) std::atomic<bool> workerSleeping{false}; // worker: about to block in the poller
+    // Bytes of payload copied to the heap because they did not fit the ring (F_HEAP records and
+    // deferred copies), minus what the drain has freed. The ring's own fill level is not enough
+    // backpressure: a message larger than half the ring becomes a 32-byte F_HEAP record, so a
+    // socket blasting large messages while the JS thread stalls would pin unbounded heap without
+    // ever filling the ring (park() would never fire). The worker parks a socket once this passes
+    // heapCap, so a stalled loop bounds outstanding heap the way a stalled main-thread read does.
+    // Worker adds, main (drain) subtracts; seq_cst so a park decision sees the drain's frees.
+    alignas(64) std::atomic<uint64_t> heapOutstanding{0};
+    size_t heapCap = 0;
     alignas(64) moodycamel::ReaderWriterQueue<Request> requests{1024};
 
     // worker thread only
@@ -169,7 +178,8 @@ struct Worker {
     size_t attached = 0;
     void (*readBatchHook)(void *, void (*)(void *)) = nullptr;
     bool draining = false;
-    std::vector<char *> heapFree;
+    struct HeapFreed { char *data; size_t length; };
+    std::vector<HeapFreed> heapFree;
 
     // ---- ring, worker side
     bool fitsRing(size_t len) {
@@ -232,32 +242,31 @@ struct Worker {
     // Appends a record for c, in order: into the ring when it fits, else as a heap copy
     // referenced from a small record, else parked behind the ring until the drain frees space.
     void emit(RecvConn *c, uint8_t type, uint8_t opCode, const char *data, size_t len) {
-        if (c->deferred.empty()) {
-            if (fitsRing(len)) {
-                char *p = reserve(c->ws, type, opCode, 0, (uint32_t) len, c->stats);
-                if (p) {
-                    if (len) {
-                        memcpy(p, data, len);
-                    }
-                    commit();
-                    return;
+        // A record that fits the ring is real backpressure: emit it directly. Anything that must
+        // go to the heap counts against heapCap; once outstanding heap is over the cap the socket
+        // parks (deferred, polling off) so a stalled loop cannot be made to pin unbounded heap.
+        if (c->deferred.empty() && fitsRing(len)) {
+            char *p = reserve(c->ws, type, opCode, 0, (uint32_t) len, c->stats);
+            if (p) {
+                if (len) {
+                    memcpy(p, data, len);
                 }
-            }
-            char *heap = new char[len ? len : 1];
-            if (len) {
-                memcpy(heap, data, len);
-            }
-            if (emitHeap(c, type, opCode, heap, len)) {
+                commit();
                 return;
             }
-            c->deferred.push_back({type, opCode, heap, len});
-        } else {
-            char *heap = new char[len ? len : 1];
-            if (len) {
-                memcpy(heap, data, len);
-            }
-            c->deferred.push_back({type, opCode, heap, len});
         }
+        char *heap = new char[len ? len : 1];
+        if (len) {
+            memcpy(heap, data, len);
+        }
+        heapOutstanding.fetch_add(len, std::memory_order_seq_cst);
+        bool overCap = heapOutstanding.load(std::memory_order_seq_cst) > heapCap;
+        // Emit the heap record straight away only when the ring has room AND we are under the cap
+        // AND nothing is already deferred (order must be preserved); otherwise defer and park.
+        if (c->deferred.empty() && !overCap && emitHeap(c, type, opCode, heap, len)) {
+            return;
+        }
+        c->deferred.push_back({type, opCode, heap, len});
         park(c);
     }
     bool emitDeferred(RecvConn *c, RecvConn::Deferred &d) {
@@ -268,7 +277,8 @@ struct Worker {
                     memcpy(p, d.data, d.length);
                 }
                 commit();
-                delete [] d.data;
+                delete [] d.data;   // freed here (copied into the ring), so it leaves the heap count
+                heapOutstanding.fetch_sub(d.length, std::memory_order_seq_cst);
                 return true;
             }
             return false;
@@ -306,6 +316,14 @@ struct Worker {
 
     // ---- sockets, worker side
     void park(RecvConn *c) {
+        // A parked socket only ever resumes from a RESUME request, which the drain sends only when
+        // it sees needResume. reserve() sets needResume when the RING is full, but a socket parked
+        // on the heap CAP (emit's over-cap branch) has room in the ring, so without setting it here
+        // that socket would never wake -- the drain frees heap but never issues RESUME (a permanent
+        // wedge: 0 messages delivered). Set it for every park, with the same Dekker discipline as
+        // reserve(): set, fence, so the drain's readIndex/needResume re-check sees it.
+        needResume.store(true, std::memory_order_seq_cst);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         if (c->parked) {
             return;
         }
@@ -389,10 +407,15 @@ struct Worker {
             c->polled = false;
         }
         c->dead = true;
+        size_t discarded = 0;
         for (RecvConn::Deferred &d : c->deferred) {
             delete [] d.data;
+            discarded += d.length;
         }
         c->deferred.clear();
+        if (discarded) {
+            heapOutstanding.fetch_sub(discarded, std::memory_order_seq_cst);
+        }
         if (c->parked) {
             unpark(c);
         }
@@ -644,7 +667,7 @@ void RecvWorker::deliverBatch(void *arg) {
             memcpy(&ref, payload, sizeof(ref));
             payload = ref.data;
             length = ref.length;
-            wk->heapFree.push_back(ref.data);   // freed after the batch's views are detached
+            wk->heapFree.push_back({ref.data, ref.length});   // freed after the batch's views are detached
         }
         b->delivered++;
         dispatch((Socket *) h->socket, h->type, h->opCode, payload, length);
@@ -678,6 +701,22 @@ bool RecvWorker::init(uv_loop_t *loop) {
     wk->ring = (char *) mem;
     wk->size = size;
     wk->mask = size - 1;
+    // Outstanding-heap cap (payloads too big for the ring, waiting for the JS thread). Bounds the
+    // backlog a stalled loop can be made to pin: without it a client sending messages larger than
+    // half the ring grows memory without limit, because each becomes a 32-byte ring record. Scaled
+    // to the ring (4x, at least 8 MB) so a single legitimate large message is never blocked, and
+    // overridable for tests. This is native heap, not ring memory.
+    wk->heapCap = size * 4;
+    if (wk->heapCap < 8 * 1024 * 1024) {
+        wk->heapCap = 8 * 1024 * 1024;
+    }
+    const char *heapEnv = getenv("CWS_RECV_HEAP_CAP_KB");
+    if (heapEnv && *heapEnv) {
+        long v = atol(heapEnv);
+        if (v >= 0) {
+            wk->heapCap = (size_t) v * 1024;
+        }
+    }
 #ifdef __linux__
     wk->wakeRd = wk->wakeWr = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 #else
@@ -778,19 +817,26 @@ bool RecvWorker::drain() {
         }
         r = b.cursor;
         wk->readIndex.store(r, std::memory_order_release);
-        for (char *p : wk->heapFree) {
-            delete [] p;
+        size_t freed = 0;
+        for (const Worker::HeapFreed &hf : wk->heapFree) {
+            delete [] hf.data;
+            freed += hf.length;
         }
         wk->heapFree.clear();
+        if (freed) {
+            wk->heapOutstanding.fetch_sub(freed, std::memory_order_seq_cst);   // heap left the count; unblocks parked sockets
+        }
         any = true;
     }
     wk->draining = false;
-    if (any) {
-        // Dekker with reserve(): see there
-        std::atomic_thread_fence(std::memory_order_seq_cst);
-        if (wk->needResume.exchange(false, std::memory_order_seq_cst)) {
-            wk->request({Request::RESUME, nullptr});
-        }
+    // Check needResume even when nothing was drained: a socket parked on the heap cap while the
+    // ring is empty (its first heap message was already over the cap) leaves needResume set with
+    // no ring records to drain, so gating this on `any` would never wake it. The drain still ran
+    // (freeing whatever heap it could above); issuing RESUME is cheap when there is nothing parked.
+    // Dekker with reserve()/park(): see there.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (wk->needResume.exchange(false, std::memory_order_seq_cst)) {
+        wk->request({Request::RESUME, nullptr});
     }
     return any;
 }

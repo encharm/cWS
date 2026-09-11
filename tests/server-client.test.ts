@@ -1143,6 +1143,86 @@ describe('CWS send queue under pressure', (): void => {
     }
   }).timeout(600000);
 
+  it('Should size the frame buffer for non-default memLevel and windowBits (deflate can expand more)', async function (): Promise<void> {
+    // WebSocketTransformer::estimate is used on the JS-thread framing paths (send worker off,
+    // corking off, TLS). Its bound must hold for any deflate tier the group is configured with:
+    // zlib's TIGHT deflateBound only holds at windowBits=15/memLevel=8, and the consumer reads
+    // both from env, so a smaller tier expanded past the buffer and overflowed the heap. Sweeps
+    // the tiers that used to abort, in a child so a FATAL is a failure.
+    if (process.platform === 'win32') { this.skip(); }
+    const { execFile } = await import('child_process');
+    let offset: number = 100;
+    for (const memLevel of ['1', '4', '8']) {
+      for (const windowBits of ['9', '12', '15']) {
+        for (const size of ['2048', '262144']) {
+          const result: any = await new Promise((resolve: (v: any) => void): void => {
+            execFile(process.execPath, [`${__dirname}/estimate-tier.child.js`],
+              { env: { ...process.env, CWS_SEND_THREAD: '0', MEMLEVEL: memLevel, WBITS: windowBits, SIZE: size, PORT_OFFSET: String(offset++) } },
+              (err: any, stdout: string, stderr: string): void => resolve({ code: err ? err.code : 0, stdout: stdout.trim(), stderr }));
+          });
+          const label: string = `memLevel ${memLevel} windowBits ${windowBits} size ${size}`;
+          expect(result.stderr).to.not.contain('FATAL', `${label}: ${result.stderr.split('\n')[0]}`);
+          expect(JSON.parse(result.stdout.split('\n').filter((l: string) => l.startsWith('{')).pop() || '{}').ok, `${label}`).to.equal(true);
+        }
+      }
+    }
+  }).timeout(120000);
+
+  it('Should not leak the send callback when a socket is ended with prepared sends still queued', async function (): Promise<void> {
+    // A sendShared frame with a user callback carries a SharedCallback wrapper (holding a pinned
+    // Persistent<Function>) in reserved. onEnd drains the queue with cancelled callbacks; if it
+    // passes nullptr instead of reserved, that wrapper leaks per queued frame. Compared against a
+    // plain send+callback control at identical volume; only the prepared path used to grow.
+    if (process.platform === 'win32') { this.skip(); }
+    const { execFile } = await import('child_process');
+    const run = (mode: string, offset: number): Promise<number> => new Promise((resolve: (v: number) => void): void => {
+      execFile(process.execPath, ['--expose-gc', `${__dirname}/reserved-leak.child.js`],
+        { env: { ...process.env, MODE: mode, PORT_OFFSET: String(offset) } },
+        (err: any, stdout: string): void => resolve(JSON.parse(stdout.trim().split('\n').filter((l: string) => l.startsWith('{')).pop() || '{}').heapMB));
+    });
+    const shared: number = await run('shared', 120);
+    const plain: number = await run('plain', 121);
+    // the leak inflated shared far above plain; after the fix they track within a few MB
+    expect(shared, `shared ${shared} MB vs plain ${plain} MB`).to.be.lessThan(plain + 4);
+  }).timeout(120000);
+
+  it('Should bound receive-worker heap when the loop stalls under large messages', async function (): Promise<void> {
+    // A message bigger than half the ring becomes a 32-byte ring record referencing a heap copy,
+    // so the ring never fills and the socket never parks: without a heap cap, a client flooding
+    // large messages while the JS thread is blocked grows memory without limit (measured ~2 GB).
+    // The heap cap parks the socket instead. The server runs in its own process so the flooding
+    // client's own buffers are not counted; its RSS growth during a 2.5 s block must stay bounded.
+    if (process.platform === 'win32') { this.skip(); }
+    const { execFile } = await import('child_process');
+    const result: any = await new Promise((resolve: (v: any) => void): void => {
+      execFile(process.execPath, [`${__dirname}/recv-heap-cap.child.js`],
+        { env: { ...process.env, PORT_OFFSET: '30' } },
+        (err: any, stdout: string): void => resolve({ stdout: stdout.trim() }));
+    });
+    const parsed: any = JSON.parse(result.stdout.split('\n').filter((l: string) => l.startsWith('{')).pop() || '{}');
+    expect(parsed.timeout, 'child timed out').to.not.equal(true);
+    expect(parsed.blockedGrowthMB, `server RSS grew ${parsed.blockedGrowthMB} MB while its loop was blocked`).to.be.lessThan(400);
+  }).timeout(30000);
+
+  it('Should not wedge a receive-worker socket parked on the heap cap', async function (): Promise<void> {
+    // A socket parked because outstanding heap passed the cap (not because the ring is full) must
+    // still resume: park() has to signal the drain to RESUME, or the drain frees heap but never
+    // wakes the socket and it delivers nothing forever. Runs with a small cap so the cap-park path
+    // (not the ring-full path) is what parks the socket; every message must still arrive in order.
+    if (process.platform === 'win32') { this.skip(); }
+    const { execFile } = await import('child_process');
+    const result: any = await new Promise((resolve: (v: any) => void): void => {
+      execFile(process.execPath, [`${__dirname}/recv-cap-wedge.child.js`],
+        { env: { ...process.env, CWS_RECV_RING_KB: '256', CWS_RECV_HEAP_CAP_KB: '512', PORT_OFFSET: '35' } },
+        (err: any, stdout: string): void => resolve({ stdout: stdout.trim() }));
+    });
+    const parsed: any = JSON.parse(result.stdout.split('\n').filter((l: string) => l.startsWith('{')).pop() || '{}');
+    expect(parsed.wedged, 'socket wedged: parked on the cap and never resumed').to.not.equal(true);
+    expect(parsed.received, 'not all messages delivered').to.equal(16);
+    expect(parsed.exact, 'delivered bytes not exact').to.equal(true);
+    expect(parsed.ordered, 'delivered out of order').to.equal(true);
+  }).timeout(30000);
+
   it('Should announce server_no_context_takeover only in shared mode', async (): Promise<void> => {
     const negotiate = (pmd: any, offer: string): Promise<string> => new Promise((resolve: (v: string) => void, reject: (e: any) => void): void => {
       const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: pmd }, (): void => {

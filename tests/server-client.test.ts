@@ -1223,6 +1223,29 @@ describe('CWS send queue under pressure', (): void => {
     expect(parsed.ordered, 'delivered out of order').to.equal(true);
   }).timeout(30000);
 
+  it('Should bound the fragment reassembly buffer at maxPayload', async function (): Promise<void> {
+    // refusePayloadLength bounds each frame, but a message can be split into unlimited
+    // continuation frames; without a cap on the reassembled total a peer sending never-finished
+    // fragments (each under maxPayload) grows the buffer without limit. The server must force-close
+    // once the accumulated size exceeds maxPayload. Tested on both receive paths in a child so a
+    // crash is a failure.
+    if (process.platform === 'win32') { this.skip(); }
+    const { execFile } = await import('child_process');
+    let offset: number = 40;
+    for (const recv of ['0', '1']) {
+      const result: any = await new Promise((resolve: (v: any) => void): void => {
+        execFile(process.execPath, [`${__dirname}/fragment-cap.child.js`],
+          { env: { ...process.env, RECV: recv, PORT_OFFSET: String(offset++) } },
+          (err: any, stdout: string): void => resolve({ stdout: stdout.trim() }));
+      });
+      const parsed: any = JSON.parse(result.stdout.split('\n').filter((l: string) => l.startsWith('{')).pop() || '{}');
+      expect(parsed.timeout, `recv=${recv}: child timed out`).to.not.equal(true);
+      expect(parsed.closedByServer, `recv=${recv}: server did not force-close the never-finished fragment stream`).to.equal(true);
+      // 1 MB maxPayload: growth should be a small multiple of that, not the tens of MB sent
+      expect(parsed.rssGrowthMB, `recv=${recv}: buffer grew ${parsed.rssGrowthMB} MB`).to.be.lessThan(40);
+    }
+  }).timeout(40000);
+
   it('Should announce server_no_context_takeover only in shared mode', async (): Promise<void> => {
     const negotiate = (pmd: any, offer: string): Promise<string> => new Promise((resolve: (v: string) => void, reject: (e: any) => void): void => {
       const wsServer: WebSocketServer = new WebSocket.Server({ port, perMessageDeflate: pmd }, (): void => {

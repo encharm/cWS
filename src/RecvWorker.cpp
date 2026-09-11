@@ -535,6 +535,13 @@ bool RecvConn::handleFragment(char *data, size_t length, unsigned int remainingB
             }
             wk->emitMessage(c, opCode, data, length);
         } else {
+            // Cap the reassembly buffer: refusePayloadLength bounds each frame, but a message can
+            // be split into unlimited continuation frames, so without this a peer could pin
+            // unbounded heap here with never-finished fragments. Mirrors WebSocket::handleFragment.
+            if (c->fragmentBuffer.length() + length > c->maxPayload) {
+                forceClose(wState);
+                return true;
+            }
             c->fragmentBuffer.append(data, length);
             if (!remainingBytes && fin) {
                 length = c->fragmentBuffer.length();

@@ -668,6 +668,17 @@ bool WebSocket<isServer>::handleFragment(char *data, size_t length, unsigned int
                 return true;
             }
         } else {
+            // Cap the reassembly buffer. refusePayloadLength bounds each frame, but a message can
+            // be split into unlimited continuation frames, and without this a peer could send
+            // never-finished fragments (each under maxPayload) and grow this buffer without limit.
+            // For a compressed message the accumulated bytes are the compressed form; inflate()
+            // then re-checks maxPayload on the inflated size. Legitimate content is smaller than
+            // its inflated form, so bounding the accumulation at maxPayload never rejects a valid
+            // message the final inflate would have accepted.
+            if (webSocket->fragmentBuffer.length() + length > group->maxPayload) {
+                forceClose(webSocketState);
+                return true;
+            }
             webSocket->fragmentBuffer.append(data, length);
             if (!remainingBytes && fin) {
                 length = webSocket->fragmentBuffer.length();

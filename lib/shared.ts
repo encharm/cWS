@@ -21,6 +21,41 @@ export const native: any = ((): NodeRequire => {
   }
 })();
 
+/**
+ * cWS links against Node's *private* internal headers (it pulls the raw `SSL*` out of TLSWrap and
+ * the libuv handle out of TCPWrap). Those struct layouts change between minor releases of the same
+ * Node major while `process.versions.modules` — the ABI number in the binding's filename — stays
+ * the same, so npm installs a binding that loads cleanly and then reads the wrong offsets:
+ * connections misbehave or crash instead of failing loudly. Node 24.7 -> 24.13 is a real example
+ * (an Environment member changed from v8::LocalVector to std::deque, and two members were added).
+ *
+ * So compare the running Node against the one the binding was built for. A differing patch level
+ * is fine; a differing minor is the dangerous case. Set CWS_IGNORE_NODE_MISMATCH=1 to silence.
+ */
+function checkNodeVersion(): void {
+  const builtFor: string = String(native.builtForNode || '').replace(/^v/, '');
+  if (!builtFor || process.env.CWS_IGNORE_NODE_MISMATCH) {
+    return;   // binding predates the check, or the user opted out
+  }
+  const running: string = process.versions.node;
+  if (builtFor === running) {
+    return;
+  }
+  const [bMajor, bMinor]: string[] = builtFor.split('.');
+  const [rMajor, rMinor]: string[] = running.split('.');
+  if (bMajor === rMajor && bMinor === rMinor) {
+    return;   // same minor: private layouts are stable within a patch line
+  }
+  // tslint:disable-next-line
+  console.error(
+    `@encharm/cws: this prebuilt binding was compiled against Node v${builtFor} but you are running ` +
+    `Node v${running}. Node's internal struct layouts change between minor versions even though the ` +
+    `addon ABI (${process.versions.modules}) does not, and cWS uses those internals, so sockets can ` +
+    `fail in confusing ways. Install Node v${builtFor}, or rebuild cWS for your Node with ` +
+    `CWS_FORCE_BUILD=1 npm rebuild @encharm/cws. Set CWS_IGNORE_NODE_MISMATCH=1 to silence this.`);
+}
+checkNodeVersion();
+
 export const zlibBackend: string = native.zlibBackend;
 /** Send worker thread status: 'active', or the reason it is not. */
 export const sendThread: string = native.sendThread;

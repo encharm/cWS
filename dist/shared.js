@@ -19,6 +19,27 @@ exports.native = (() => {
         throw err;
     }
 })();
+function checkNodeVersion() {
+    const builtFor = String(exports.native.builtForNode || '').replace(/^v/, '');
+    if (!builtFor || process.env.CWS_IGNORE_NODE_MISMATCH) {
+        return;
+    }
+    const running = process.versions.node;
+    if (builtFor === running) {
+        return;
+    }
+    const [bMajor, bMinor] = builtFor.split('.');
+    const [rMajor, rMinor] = running.split('.');
+    if (bMajor === rMajor && bMinor === rMinor) {
+        return;
+    }
+    console.error(`@encharm/cws: this prebuilt binding was compiled against Node v${builtFor} but you are running ` +
+        `Node v${running}. Node's internal struct layouts change between minor versions even though the ` +
+        `addon ABI (${process.versions.modules}) does not, and cWS uses those internals, so sockets can ` +
+        `fail in confusing ways. Install Node v${builtFor}, or rebuild cWS for your Node with ` +
+        `CWS_FORCE_BUILD=1 npm rebuild @encharm/cws. Set CWS_IGNORE_NODE_MISMATCH=1 to silence this.`);
+}
+checkNodeVersion();
 exports.zlibBackend = exports.native.zlibBackend;
 exports.sendThread = exports.native.sendThread;
 function recvThread() {

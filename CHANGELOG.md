@@ -1,3 +1,6 @@
+## Unreleased
+* The binding now records the exact Node version it was built against (`builtForNode`) and warns at load when the running Node differs in major.minor. cWS compiles against Node's private internal headers, whose struct layouts change between minor releases while `process.versions.modules` (the ABI in the binding filename) stays the same, so npm installs a binding that loads cleanly and can then read wrong offsets. Silence with `CWS_IGNORE_NODE_MISMATCH=1`; fix properly with a matching Node or `CWS_FORCE_BUILD=1 npm rebuild @encharm/cws`. Prebuilt bindings are built against Node 20.10.0 (ABI 115), 22.12.0 (127), 24.7.0 (137) and 26.8.1 (147).
+
 ## Released 4.17.5
 * Bounded the fragment reassembly buffer at `maxPayload`, on both receive paths. `maxPayload` was enforced per frame only, so a peer could send never-finished continuation frames, each under the limit, and grow the per-connection buffer without bound (40 MB accepted against a 1 MB limit in the reproducer; the ceiling was the peer's bandwidth). The server now force-closes once the reassembled total would exceed `maxPayload`; a message of exactly `maxPayload` still passes. Inherited from uWebSockets 0.14, present since before 4.6.0, not a regression. Covered by a regression test proven to fail without the fix.
 
